@@ -420,13 +420,14 @@ function drawWarp(src){
 function updateResults(){
   if(!markers.length){resultCard.style.display='none';return;}
   resultCard.style.display='';
-  const{w,h}=getPaperSize();
-  summaryEl.textContent=`共 ${markers.length} 个点 | 纸心 (${(w/2).toFixed(2)}, ${(h/2).toFixed(2)})`;
+  const{w,h}=getPaperSize();const cx=w/2,cy=h/2;
+  summaryEl.textContent=`共 ${markers.length} 个点 | 纸心 (${cx.toFixed(2)}, ${cy.toFixed(2)})`;
   markerGrid.innerHTML=markers.map((m,i)=>`
     <div class="marker-item">
       <span class="num">点 ${i+1}</span>
-      <span class="detail">X: ${m.paperX.toFixed(2)} Y: ${m.paperY.toFixed(2)}</span>
-      <span class="detail">面积: ${m.area.toFixed(2)} 距心: ${m.dist.toFixed(2)}</span>
+      <span class="detail">X: ${m.paperX.toFixed(2)}  Y: ${m.paperY.toFixed(2)}</span>
+      <span class="detail">ex: ${(m.paperX-cx).toFixed(2)}  ey: ${(m.paperY-cy).toFixed(2)}</span>
+      <span class="detail">距心: ${m.dist.toFixed(2)}  面积: ${m.area.toFixed(2)}</span>
     </div>`).join('');
 }
 
@@ -449,17 +450,17 @@ btnRerun.addEventListener('click',()=>fullPipeline(true));
 
 // --- 复制/导出数据 ---
 function buildDataRows(){
-  const{w,h}=getPaperSize();
-  return ['点号\tX(mm)\tY(mm)\t距中心(mm)\t面积(mm²)',
-    ...markers.map((m,i)=>`${i+1}\t${m.paperX.toFixed(3)}\t${m.paperY.toFixed(3)}\t${m.dist.toFixed(3)}\t${m.area.toFixed(3)}`),
-    `# 纸心: (${(w/2).toFixed(3)}, ${(h/2).toFixed(3)}) mm  共 ${markers.length} 个点`
+  const{w,h}=getPaperSize();const cx=w/2,cy=h/2;
+  return ['点号\tX(mm)\tY(mm)\tex(mm)\tey(mm)\t距中心(mm)\t面积(mm²)',
+    ...markers.map((m,i)=>`${i+1}\t${m.paperX.toFixed(3)}\t${m.paperY.toFixed(3)}\t${(m.paperX-cx).toFixed(3)}\t${(m.paperY-cy).toFixed(3)}\t${m.dist.toFixed(3)}\t${m.area.toFixed(3)}`),
+    `# 纸心: (${cx.toFixed(3)}, ${cy.toFixed(3)}) mm  共 ${markers.length} 个点`
   ].join('\n');
 }
 
 function buildCsv(){
-  const{w,h}=getPaperSize();
-  const lines=['#X,Y,DistFromCenter(mm),Area(mm2),PaperW,PaperH'];
-  markers.forEach((m,i)=>lines.push(`${m.paperX.toFixed(3)},${m.paperY.toFixed(3)},${m.dist.toFixed(3)},${m.area.toFixed(3)},${w},${h}`));
+  const{w,h}=getPaperSize();const cx=w/2,cy=h/2;
+  const lines=['#X,Y,ex,ey,DistFromCenter(mm),Area(mm2),PaperW,PaperH'];
+  markers.forEach((m,i)=>lines.push(`${m.paperX.toFixed(3)},${m.paperY.toFixed(3)},${(m.paperX-cx).toFixed(3)},${(m.paperY-cy).toFixed(3)},${m.dist.toFixed(3)},${m.area.toFixed(3)},${w},${h}`));
   return lines.join('\n');
 }
 
