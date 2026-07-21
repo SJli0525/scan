@@ -6,6 +6,7 @@
 <title>纸张测距</title>
 <style>
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { touch-action: none; -webkit-user-select: none; user-select: none; overscroll-behavior: none; }
 body {
   margin: 0; padding: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
   background: #f3f4f6; color: #1f2937; font-size: 15px; line-height: 1.5;
@@ -143,9 +144,13 @@ body {
   <div class="card-title">识别结果</div>
   <div id="summary"></div>
   <div class="marker-grid" id="markerGrid"></div>
+  <div class="btn-group" style="margin-top:12px">
+    <button class="btn btn-secondary" id="btnCopy" style="flex:1">📋 复制数据</button>
+    <button class="btn btn-secondary" id="btnCsv" style="flex:1">💾 下载 CSV</button>
+  </div>
 </div>
 
-<div class="hint">上传后自动标定纸张四角、检测标记点。若四角不准，可手指在图上拖拽绿色角点手动修正</div>
+<div class="hint">上传后自动标定纸张四角、检测标记点。若四角不准，可手指在图上拖拽绿色角点手动修正。结果可复制到 Excel 或下载 CSV 文件</div>
 
 <script async src="opencv.js" onload="onOpenCvReady()"></script>
 <script>
@@ -441,6 +446,44 @@ fileInputs.forEach(fi=>fi.addEventListener('change',e=>{if(!cvReady)return;const
   const img=new Image();img.onload=()=>{imgEl=img;fullPipeline(true);};img.src=URL.createObjectURL(file);}));
 
 btnRerun.addEventListener('click',()=>fullPipeline(true));
+
+// --- 复制/导出数据 ---
+function buildDataRows(){
+  const{w,h}=getPaperSize();
+  return ['点号\tX(mm)\tY(mm)\t距中心(mm)\t面积(mm²)',
+    ...markers.map((m,i)=>`${i+1}\t${m.paperX.toFixed(3)}\t${m.paperY.toFixed(3)}\t${m.dist.toFixed(3)}\t${m.area.toFixed(3)}`),
+    `# 纸心: (${(w/2).toFixed(3)}, ${(h/2).toFixed(3)}) mm  共 ${markers.length} 个点`
+  ].join('\n');
+}
+
+function buildCsv(){
+  const{w,h}=getPaperSize();
+  const lines=['#X,Y,DistFromCenter(mm),Area(mm2),PaperW,PaperH'];
+  markers.forEach((m,i)=>lines.push(`${m.paperX.toFixed(3)},${m.paperY.toFixed(3)},${m.dist.toFixed(3)},${m.area.toFixed(3)},${w},${h}`));
+  return lines.join('\n');
+}
+
+$('btnCopy').addEventListener('click',()=>{
+  if(!markers.length)return;
+  const text=buildDataRows();
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>setStatus('数据已复制到剪贴板，可在 Excel 粘贴','success'));
+  }else{
+    const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';
+    document.body.appendChild(ta);ta.select();try{document.execCommand('copy');setStatus('数据已复制','success');}catch(e){setStatus('复制失败，请手动选择','error');}
+    document.body.removeChild(ta);
+  }
+});
+
+$('btnCsv').addEventListener('click',()=>{
+  if(!markers.length)return;
+  const csv=buildCsv();
+  const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=`markers_${Date.now()}.csv`;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+  setStatus('CSV 已开始下载','success');
+});
 ['paperW','paperH','minAreaPct','maxAreaPct'].forEach(id=>{document.getElementById(id).addEventListener('change',()=>{if(imgEl&&corners)fullPipeline(false);});});
 
 // --- Touch & mouse corner drag ---
@@ -453,7 +496,7 @@ function getCanvasPt(canvas,e){
 
 function nearestCornerIdx(x,y){
   if(!corners)return -1; let best=-1,bestD=Infinity;
-  const hitR=Math.max(20,canvasOrig.width/60);
+  const hitR=Math.max(60,canvasOrig.width/25);
   corners.forEach(([cx,cy],i)=>{const d=Math.hypot(cx-x,cy-y);if(d<hitR&&d<bestD){bestD=d;best=i;}});
   return best;
 }
