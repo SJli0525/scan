@@ -159,23 +159,13 @@ body {
 </div>
 
 <div class="card">
-  <div class="card-title">📐 C3 / C4 计算</div>
-  <div class="param-grid" style="grid-template-columns:1fr 1fr 1fr;gap:8px">
-    <div class="param-item">
-      <label>K</label>
-      <input type="number" id="formulaK" value="0.615" step="any">
-    </div>
-    <div class="param-item">
-      <label>m 起始</label>
-      <input type="number" id="formulaMStart" value="0" step="any">
-    </div>
-    <div class="param-item">
-      <label>m 终止</label>
-      <input type="number" id="formulaMEnd" value="5" step="any">
-    </div>
+  <div class="card-title">📐 Ex / Ey 标准差计算</div>
+  <div class="param-item" style="margin-bottom:8px">
+    <label>K 系数</label>
+    <input type="number" id="formulaK" value="0.615" step="any">
   </div>
   <div class="row" style="margin-top:6px;font-size:12px;color:#6b7280;justify-content:space-between">
-    <span>ex (mm)</span><span>ey (mm)</span><span>m</span><span style="width:24px"></span>
+    <span>X (mm)</span><span>Y (mm)</span><span style="width:24px"></span>
   </div>
   <div id="formulaRows"></div>
   <div class="btn-group" style="margin-top:8px">
@@ -183,11 +173,10 @@ body {
     <button class="btn btn-secondary" id="btnFromPoints" style="flex:1;padding:8px">⬇ 从检测点导入</button>
   </div>
   <div class="btn-group" style="margin-top:8px">
-    <button class="btn btn-primary" id="btnCalcC3" style="flex:1">计算 C3</button>
-    <button class="btn btn-primary" id="btnCalcC4" style="flex:1">计算 C4</button>
+    <button class="btn btn-primary" id="btnCalcStd" style="flex:1">📊 计算 Ex / Ey</button>
   </div>
   <div id="formulaResult" style="margin-top:12px;padding:10px;background:#f9fafb;border-radius:8px;text-align:center;font-size:15px;font-weight:600;color:#1f2937;min-height:20px">结果会显示在这里</div>
-  <div class="hint" style="margin-top:6px;font-size:12px">公式：C = √[Σ(m²−1)·K/(1−m)]，按数据行求和（m 可手动改）</div>
+  <div class="hint" style="margin-top:6px;font-size:12px">公式：Ex = √[Σ(Xᵢ−X̄)²/(n−1)]·K，Ey 同理</div>
 </div>
 
 <div class="hint">上传后自动标定纸张四角、检测标记点。若四角不准，可手指在图上拖拽绿色角点手动修正。结果可复制到 Excel 或下载 CSV 文件</div>
@@ -534,7 +523,7 @@ $('btnCsv').addEventListener('click',()=>{
   setStatus('CSV 已开始下载','success');
 });
 
-// --- C3 / C4 公式计算 ---
+// --- Ex / Ey 标准差计算 ---
 let formulaRows = [];
 
 function renderFormulaRows(){
@@ -544,10 +533,9 @@ function renderFormulaRows(){
     return;
   }
   c.innerHTML = formulaRows.map((r,i)=>`
-    <div class="param-grid" style="grid-template-columns:1fr 1fr 1fr 28px;gap:4px;margin-top:4px">
-      <input type="number" step="any" data-idx="${i}" data-field="ex" value="${r.ex||''}" placeholder="ex" style="padding:6px;font-size:14px">
-      <input type="number" step="any" data-idx="${i}" data-field="ey" value="${r.ey||''}" placeholder="ey" style="padding:6px;font-size:14px">
-      <input type="number" step="any" data-idx="${i}" data-field="m" value="${r.m===''?'':r.m}" placeholder="m" style="padding:6px;font-size:14px">
+    <div class="param-grid" style="grid-template-columns:1fr 1fr 28px;gap:4px;margin-top:4px">
+      <input type="number" step="any" data-idx="${i}" data-field="X" value="${r.X||''}" placeholder="X" style="padding:6px;font-size:14px">
+      <input type="number" step="any" data-idx="${i}" data-field="Y" value="${r.Y||''}" placeholder="Y" style="padding:6px;font-size:14px">
       <button data-idx="${i}" data-action="del" style="background:#ef4444;color:#fff;border:none;border-radius:6px;font-size:14px;padding:0">×</button>
     </div>`).join('');
   c.querySelectorAll('input').forEach(inp=>inp.addEventListener('change',e=>{
@@ -560,53 +548,46 @@ function renderFormulaRows(){
 }
 
 $('btnAddRow').addEventListener('click',()=>{
-  formulaRows.push({ex:'',ey:'',m:formulaRows.length});
+  formulaRows.push({X:'',Y:''});
   renderFormulaRows();
 });
 
 $('btnFromPoints').addEventListener('click',()=>{
   if(!markers.length){setStatus('还没有检测到点','error');return;}
-  const{w,h}=getPaperSize(); const cx=w/2,cy=h/2;
-  formulaRows = markers.map((m,i)=>({ex:(m.paperX-cx).toFixed(3),ey:(m.paperY-cy).toFixed(3),m:i}));
+  formulaRows = markers.map(m=>({X:m.paperX.toFixed(3),Y:m.paperY.toFixed(3)}));
   renderFormulaRows();
-  setStatus(`已从 ${markers.length} 个检测点导入数据`,'success');
+  setStatus(`已从 ${markers.length} 个检测点导入 X/Y`,'success');
 });
 
-function calcC(which){
-  const K = parseFloat($('formulaK').value);
-  const mStart = parseFloat($('formulaMStart').value);
-  const mEnd = parseFloat($('formulaMEnd').value);
-  if(isNaN(K)){$('formulaResult').textContent='请输入有效的 K';return;}
-  const rows = formulaRows.filter(r=>{
-    const ex=parseFloat(r.ex),ey=parseFloat(r.ey);
-    return !isNaN(ex)&&!isNaN(ey);
-  });
-  if(!rows.length){$('formulaResult').textContent='请至少输入一行 ex/ey 数据';return;}
-
-  // m 决定公式形态：
-  // C3 (基础): m = 数据行序号 (0,1,2,...)
-  // C4 (或): m = 行序号，但 m 范围 mStart~mEnd 之外的项跳过
-  let sum = 0, used = 0;
-  rows.forEach((r,i)=>{
-    const m = !isNaN(parseFloat(r.m)) ? parseFloat(r.m) : i;
-    if(m < mStart || m > mEnd) return;
-    if(m === 1) return;  // (1-m) 不能为零
-    const term = (m*m - 1) * K / (1 - m);
-    sum += term; used++;
-  });
-
-  if(used === 0){$('formulaResult').textContent='当前 m 范围内没有有效数据';return;}
-
-  if(sum < 0){
-    $('formulaResult').innerHTML = `${which} = √(${sum.toFixed(4)})<br><span style="color:#b91c1c;font-size:13px;font-weight:normal">负数无实数根，检查 m 取值</span>`;
-    return;
-  }
-  const result = Math.sqrt(sum);
-  $('formulaResult').innerHTML = `${which} = ${result.toFixed(4)}<br><span style="color:#6b7280;font-size:12px;font-weight:normal">Σ 项数: ${used} | 累加: ${sum.toFixed(4)}</span>`;
+function stdDev(vals){
+  const n = vals.length;
+  if(n < 2) return null;
+  const mean = vals.reduce((a,b)=>a+b,0)/n;
+  const s2 = vals.reduce((a,v)=>a+(v-mean)*(v-mean),0)/(n-1);
+  return Math.sqrt(s2);
 }
 
-$('btnCalcC3').addEventListener('click',()=>calcC('C3'));
-$('btnCalcC4').addEventListener('click',()=>calcC('C4'));
+function calcStd(){
+  const K = parseFloat($('formulaK').value);
+  if(isNaN(K)){$('formulaResult').textContent='请输入有效的 K';return;}
+  const xVals=[], yVals=[];
+  formulaRows.forEach(r=>{
+    const x=parseFloat(r.X), y=parseFloat(r.Y);
+    if(!isNaN(x))xVals.push(x);
+    if(!isNaN(y))yVals.push(y);
+  });
+  if(xVals.length<2){$('formulaResult').textContent='X 数据至少需要 2 个';return;}
+  if(yVals.length<2){$('formulaResult').textContent='Y 数据至少需要 2 个';return;}
+  const sx = stdDev(xVals), sy = stdDev(yVals);
+  const Ex = K * sx, Ey = K * sy;
+  const xMean = xVals.reduce((a,b)=>a+b,0)/xVals.length;
+  const yMean = yVals.reduce((a,b)=>a+b,0)/yVals.length;
+  $('formulaResult').innerHTML =
+    `Ex = ${Ex.toFixed(4)} mm<br>Ey = ${Ey.toFixed(4)} mm`+
+    `<br><span style="color:#6b7280;font-size:12px;font-weight:normal">σx=${sx.toFixed(4)}  σy=${sy.toFixed(4)} | n=${xVals.length} | X̄=${xMean.toFixed(2)} Ȳ=${yMean.toFixed(2)}</span>`;
+}
+
+$('btnCalcStd').addEventListener('click',calcStd);
 renderFormulaRows();
 ['paperW','paperH','minAreaPct','maxAreaPct'].forEach(id=>{document.getElementById(id).addEventListener('change',()=>{if(imgEl&&corners)fullPipeline(false);});});
 
