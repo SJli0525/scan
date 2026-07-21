@@ -46,7 +46,7 @@ body {
 #status.error { background: #fef2f2; color: #b91c1c; }
 .canvas-wrap {
   position: relative; border-radius: 10px; overflow: hidden; background: #e5e7eb;
-  margin-bottom: 8px; touch-action: none;
+  margin-bottom: 8px;
 }
 .canvas-wrap canvas { display: block; width: 100%; height: auto; }
 .canvas-label {
@@ -505,12 +505,12 @@ let dragIdx=-1;
 
 function onDragStart(e){if(!corners)return;
   const p=getCanvasPt(canvasOrig,e);const idx=nearestCornerIdx(p.x,p.y);
-  if(idx>=0){e.preventDefault();dragIdx=idx;}}
+  if(idx>=0){e.preventDefault();canvasOrig.style.touchAction='none';dragIdx=idx;}}
 
 function onDragMove(e){if(!corners||dragIdx<0)return;
   e.preventDefault();const p=getCanvasPt(canvasOrig,e);corners[dragIdx]=[p.x,p.y];drawOrig();}
 
-function onDragEnd(e){if(dragIdx>=0){dragIdx=-1;fullPipeline(false);}}
+function onDragEnd(e){if(dragIdx>=0){canvasOrig.style.touchAction='';dragIdx=-1;fullPipeline(false);}}
 
 // touch
 canvasOrig.addEventListener('touchstart',onDragStart,{passive:false});
