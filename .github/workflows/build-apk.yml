@@ -27,7 +27,7 @@ jobs:
 
       - name: Download OpenCV (offline assets)
         run: |
-          cd android/app/src/main/assets
+          cd app/src/main/assets
           curl -L -o opencv.js https://docs.opencv.org/4.8.0/opencv.js
           echo "opencv.js size: $(stat -c%s opencv.js)"
           curl -L -o opencv_js.wasm https://docs.opencv.org/4.8.0/opencv_js.wasm || echo "wasm optional, skipped"
@@ -36,11 +36,10 @@ jobs:
         uses: gradle/gradle-build-action@v3
         with:
           gradle-version: '8.2'
-          build-root-directory: android
           arguments: ':app:assembleDebug'
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/app-debug.apk
