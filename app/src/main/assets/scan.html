@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>纸张偏转 · 自动多点测距（离线版）</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; max-width: 920px; margin: auto; }
+        h2 { text-align: center; }
+        .row { margin: 8px 0; text-align: center; }
+        label { display: inline-block; min-width: 88px; font-size: 14px; }
+        input[type=number] { width: 72px; margin-right: 10px; }
+        canvas { border: 1px solid #ccc; display: block; margin: 10px auto; max-width: 100%; }
+        #status { color: #666; text-align: center; margin: 8px 0; }
+        .panels { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; }
+        .panel { flex: 1; min-width: 280px; }
+        .panel p { text-align: center; margin: 4px 0; font-size: 14px; color: #555; }
+        table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+        th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: center; }
+        th { background: #f5f5f5; }
+        .btns { text-align: center; margin: 8px 0; }
+        button { padding: 6px 16px; cursor: pointer; }
+        .hint { color: #888; font-size: 13px; text-align: center; }
+    </style>
+</head>
+<body>
+    <h2>纸张偏转 · 自动多点测距（离线版）</h2>
+
+    <div class="row">
+        <label>纸宽</label><input type="number" id="paperW" value="210" min="0.01" step="any">
+        <label>纸长</label><input type="number" id="paperH" value="297" min="0.01" step="any">
+    </div>
+    <div class="row">
+        <label>点面积下限%</label><input type="number" id="minAreaPct" value="0.05" min="0.001" step="0.01">
+        <label>点面积上限%</label><input type="number" id="maxAreaPct" value="3" min="0.01" step="0.1">
+    </div>
+
+    <div id="status">正在加载 OpenCV.js …</div>
+    <div class="row"><input type="file" id="fileInput" accept="image/*" disabled></div>
+    <div class="btns">
+        <button id="btnRerun" disabled>重新识别</button>
+    </div>
+    <p class="hint">上传后自动标定纸张四角、检测标记点质心并计算距纸心距离。若自动四角不准，可直接在原图上拖拽绿色角点手动修正</p>
+
+    <div class="panels">
+        <div class="panel">
+            <p>原图（绿=自动四角，红=点中心，蓝=纸心）</p>
+            <canvas id="canvasOrig"></canvas>
+        </div>
+        <div class="panel">
+            <p>矫正俯视图</p>
+            <canvas id="canvasWarp"></canvas>
+        </div>
+    </div>
+
+    <table id="resultTable" style="display:none">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>纸面 X</th>
+                <th>纸面 Y</th>
+                <th>面积</th>
+                <th>距中心</th>
+            </tr>
+        </thead>
+        <tbody id="resultBody"></tbody>
+    </table>
+    <div id="summary" style="text-align:center;margin-top:8px;color:#444"></div>
+
+    <script async src="opencv.js" onload="onOpenCvReady()"></script>
+    <script>
+        let cvReady = false;
+        let imgEl = null;
+        let corners = null;
+        let markers = [];
+        let lastStrategy = '';
+        const WARP_SIZE = 1000;
+
+        const statusEl = document.getElementById('status');
+        const canvasOrig = document.getElementById('canvasOrig');
+        const canvasWarp = document.getElementById('canvasWarp');
+        const ctxOrig = canvasOrig.getContext('2d');
+        const ctxWarp = canvasWarp.getContext('2d');
+        const fileInput = document.getElementById('fileInput');
+        const btnRerun = document.getElementById('btnRerun');
+        const resultTable = document.getElementById('resultTable');
+        const resultBody = document.getElementById('resultBody');
+        const summaryEl = document.getElementById('summary');
+
+        // 离线版：调试日志已关闭
+        function dbgLog() { /* 离线版已关闭调试日志 */ }
+
+        function onOpenCvReady() {
+            cvReady = true;
+            statusEl.textContent = 'OpenCV 已就绪，请上传照片';
+            fileInput.disabled = false;
+        }
+
+        function getPaperSize() {
+            return {
+                w: Math.max(parseFloat(document.getElementById('paperW').value) || 0, 0.01),
+                h: Math.max(parseFloat(document.getElementById('paperH').value) || 0, 0.01)
+            };
+        }
+
+        function getAreaThresholds() {
+            const { w, h } = getPaperSize();
+            const paperArea = w * h;
+            const minPct = Math.max(parseFloat(document.getElementById('minAreaPct').value) || 0.05, 0.001) / 100;
+            const maxPct = Math.max(parseFloat(document.getElementById('maxAreaPct').value) || 3, 0.01) / 100;
+            return { minArea: paperArea * minPct, maxArea: paperArea * maxPct };
+        }
+
+        function dist(a, b) {
+            return Math.hypot(a[0] - b[0], a[1] - b[1]);
+        }
+
+        /** 稳定排序：左上、右上、右下、左下 */
+        function orderCorners(pts) {
+            const p = pts.map(v => [v[0], v[1]]);
+            const sums = p.map(v => v[0] + v[1]);
+            const diffs = p.map(v => v[1] - v[0]);
+            return [
+                p[sums.indexOf(Math.min(...sums))],
+                p[diffs.indexOf(Math.min(...diffs))],
+                p[sums.indexOf(Math.max(...sums))],
+                p[diffs.indexOf(Math.max(...diffs))]
+            ];
+        }
+
+        function quadArea(pts) {
+            let s = 0;
+            for (let i = 0; i < 4; i++) {
+                const [x1, y1] = pts[i];
+                const [x2, y2] = pts[(i + 1) % 4];
+                s += x1 * y2 - x2 * y1;
+            }
+            return Math.abs(s) / 2;
+        }
+
+        function quadAspectRatio(pts) {
+            const wTop = dist(pts[0], pts[1]);
+            const wBot = dist(pts[3], pts[2]);
+            const hLeft = dist(pts[0], pts[3]);
+            const hRight = dist(pts[1], pts[2]);
+            const w = (wTop + wBot) / 2;
+            const h = (hLeft + hRight) / 2;
+            return w / Math.max(h, 1);
+        }
+
+        /** 四角平均内角与 90° 的偏差（度），纸张应接近矩形 */
+        function angleDeviation(pts) {
+            let total = 0;
+            for (let i = 0; i < 4; i++) {
+                const prev = pts[(i + 3) % 4];
+                const cur = pts[i];
+                const next = pts[(i + 1) % 4];
+                const v1 = [prev[0] - cur[0], prev[1] - cur[1]];
+                const v2 = [next[0] - cur[0], next[1] - cur[1]];
+                const dot = v1[0] * v2[0] + v1[1] * v2[1];
+                const m1 = Math.hypot(v1[0], v1[1]);
+                const m2 = Math.hypot(v2[0], v2[1]);
+                const ang = Math.acos(Math.max(-1, Math.min(1, dot / (m1 * m2 || 1)))) * 180 / Math.PI;
+                total += Math.abs(ang - 90);
+            }
+            return total / 4;
+        }
+
+        /** 对边长度最大比值（越接近 1 越像矩形） */
+        function sideEquality(pts) {
+            const wTop = dist(pts[0], pts[1]), wBot = dist(pts[3], pts[2]);
+            const hLeft = dist(pts[0], pts[3]), hRight = dist(pts[1], pts[2]);
+            const wr = Math.max(wTop, wBot) / Math.max(Math.min(wTop, wBot), 1);
+            const hr = Math.max(hLeft, hRight) / Math.max(Math.min(hLeft, hRight), 1);
+            return Math.max(wr, hr);
+        }
+
+        function scoreQuad(pts, imgArea) {
+            const area = quadArea(pts);
+            const areaPct = area / imgArea;
+            if (area < imgArea * 0.08) {
+                dbgLog('C', 'scan.html:scoreQuad', 'rejected area too small', { areaPct, threshold: 0.08 });
+                return -1;
+            }
+            if (area > imgArea * 0.95) {
+                dbgLog('C', 'scan.html:scoreQuad', 'rejected area too large', { areaPct, threshold: 0.95 });
+                return -1;
+            }
+
+
+            const { w, h } = getPaperSize();
+            const expected = w / h;
+            const actual = quadAspectRatio(pts);
+            // 允许纸张横放或竖放两种方向
+            const errA = Math.abs(actual - expected) / expected;
+            const errB = Math.abs(actual - 1 / expected) / (1 / expected);
+            const ratioErr = Math.min(errA, errB);
+            const ratioScore = Math.max(0, 1 - ratioErr * 2);
+
+            // 纸张是矩形：惩罚内角偏离 90° 与对边长度不等
+            const angScore = Math.max(0, 1 - angleDeviation(pts) / 20);
+            const sideScore = Math.max(0, 1 - (sideEquality(pts) - 1) / 0.5);
+            const rectScore = angScore * sideScore;
+
+            const mat = cv.matFromArray(4, 1, cv.CV_32SC2, pts.flat());
+            const convex = cv.isContourConvex(mat);
+            mat.delete();
+
+            const score = area * (0.2 + 0.3 * ratioScore + 0.5 * rectScore) * (convex ? 1 : 0.3);
+            dbgLog('B', 'scan.html:scoreQuad', 'quad scored', {
+                areaPct, actualRatio: actual, expectedRatio: expected, ratioErr,
+                angScore, sideScore, rectScore, convex, score
+            });
+            return score;
+        }
+
+        function extractQuadFromContour(cnt, epsilonRatio) {
+            const peri = cv.arcLength(cnt, true);
+            for (const eps of [epsilonRatio, epsilonRatio * 0.7, epsilonRatio * 1.3, 0.04]) {
+                const approx = new cv.Mat();
+                cv.approxPolyDP(cnt, approx, eps * peri, true);
+                if (approx.rows === 4) {
+                    const pts = [];
+                    for (let j = 0; j < 4; j++) {
+                        pts.push([approx.data32S[j * 2], approx.data32S[j * 2 + 1]]);
+                    }
+                    approx.delete();
+                    return orderCorners(pts);
+                }
+                approx.delete();
+            }
+            return null;
+        }
+
+        function collectQuadsFromContours(contours, imgArea, epsilonRatio, minAreaRatio, strategyName) {
+            const candidates = [];
+            let skippedArea = 0, skippedApprox = 0, skippedScore = 0;
+            for (let i = 0; i < contours.size(); i++) {
+                const cnt = contours.get(i);
+                const area = cv.contourArea(cnt);
+                if (area < imgArea * minAreaRatio) { skippedArea++; continue; }
+
+                const quad = extractQuadFromContour(cnt, epsilonRatio);
+                if (!quad) { skippedApprox++; continue; }
+
+                const score = scoreQuad(quad, imgArea);
+                if (score <= 0) { skippedScore++; continue; }
+                candidates.push({ quad, score, areaPct: area / imgArea });
+            }
+            dbgLog('D', 'scan.html:collectQuads', 'contour scan', {
+                strategyName, total: contours.size(), skippedArea, skippedApprox, skippedScore,
+                candidateCount: candidates.length,
+                topScores: candidates.sort((a, b) => b.score - a.score).slice(0, 3).map(c => ({
+                    score: c.score, areaPct: c.areaPct
+                }))
+            });
+            return candidates;
+        }
+
+        function findBestQuad(candidates) {
+            if (!candidates.length) return null;
+            candidates.sort((a, b) => b.score - a.score);
+            return candidates[0].quad;
+        }
+
+        /** 策略1：Canny 边缘 + 形态学闭运算 */
+        function detectFromCanny(src, low, high, eps) {
+            const gray = new cv.Mat();
+            const blurred = new cv.Mat();
+            const edges = new cv.Mat();
+            const dilated = new cv.Mat();
+            const contours = new cv.MatVector();
+            const imgArea = src.rows * src.cols;
+
+            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+            cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+            cv.Canny(blurred, edges, low, high);
+            const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+            cv.dilate(edges, dilated, kernel);
+
+            cv.findContours(dilated, contours, new cv.Mat(), cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+            const cands = collectQuadsFromContours(contours, imgArea, eps, 0.05, `canny_${low}_${high}`);
+
+            gray.delete(); blurred.delete(); edges.delete(); dilated.delete();
+            contours.delete(); kernel.delete();
+            return findBestQuad(cands);
+        }
+
+        /** 策略2：亮区分割（白纸） */
+        function detectFromBrightRegion(src, eps) {
+            const gray = new cv.Mat();
+            const blurred = new cv.Mat();
+            const binary = new cv.Mat();
+            const closed = new cv.Mat();
+            const contours = new cv.MatVector();
+            const imgArea = src.rows * src.cols;
+
+            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+            cv.GaussianBlur(gray, blurred, new cv.Size(7, 7), 0);
+            cv.threshold(blurred, binary, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+            const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(7, 7));
+            cv.morphologyEx(binary, closed, cv.MORPH_CLOSE, kernel);
+
+            cv.findContours(closed, contours, new cv.Mat(), cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+            const cands = collectQuadsFromContours(contours, imgArea, eps, 0.08, 'bright_otsu');
+
+            gray.delete(); blurred.delete(); binary.delete(); closed.delete();
+            contours.delete(); kernel.delete();
+            return findBestQuad(cands);
+        }
+
+        /** 策略3：自适应阈值 */
+        function detectFromAdaptive(src, eps) {
+            const gray = new cv.Mat();
+            const blurred = new cv.Mat();
+            const binary = new cv.Mat();
+            const closed = new cv.Mat();
+            const contours = new cv.MatVector();
+            const imgArea = src.rows * src.cols;
+
+            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+            cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+            cv.adaptiveThreshold(blurred, binary, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
+            const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+            cv.morphologyEx(binary, closed, cv.MORPH_CLOSE, kernel);
+
+            cv.findContours(closed, contours, new cv.Mat(), cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+            const cands = collectQuadsFromContours(contours, imgArea, eps, 0.05, 'adaptive');
+
+            gray.delete(); blurred.delete(); binary.delete(); closed.delete();
+            contours.delete(); kernel.delete();
+            return findBestQuad(cands);
+        }
+
+        /** 策略4：最大轮廓的最小外接旋转矩形 */
+        function detectFromMinAreaRect(src) {
+            const gray = new cv.Mat();
+            const blurred = new cv.Mat();
+            const binary = new cv.Mat();
+            const contours = new cv.MatVector();
+            const imgArea = src.rows * src.cols;
+
+            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+            cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+            cv.threshold(blurred, binary, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+
+            cv.findContours(binary, contours, new cv.Mat(), cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+            let maxCnt = null;
+            let maxArea = 0;
+            for (let i = 0; i < contours.size(); i++) {
+                const cnt = contours.get(i);
+                const area = cv.contourArea(cnt);
+                if (area > maxArea) { maxArea = area; maxCnt = cnt; }
+            }
+
+            let quad = null;
+            if (maxCnt && maxArea > imgArea * 0.08) {
+                const rect = cv.minAreaRect(maxCnt);
+                const box = cv.RotatedRect.points(rect);
+                quad = orderCorners(box.map(p => [p.x, p.y]));
+            }
+
+            gray.delete(); blurred.delete(); binary.delete(); contours.delete();
+            return quad;
+        }
+
+        /** 策略5：颜色分割（白纸 vs 彩色背景，如绿/蓝切割垫） */
+        function detectFromColorMask(src, eps) {
+            const rgb = new cv.Mat();
+            const hsv = new cv.Mat();
+            const paperMask = new cv.Mat();
+            const closed = new cv.Mat();
+            const contours = new cv.MatVector();
+            const imgArea = src.rows * src.cols;
+
+            cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
+            cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+
+            // 白纸特征：低饱和度 + 高亮度；彩色切割垫饱和度高，会被自动排除
+            const lower = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 0, 170, 0]);
+            const upper = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [179, 70, 255, 255]);
+            cv.inRange(hsv, lower, upper, paperMask);
+
+            const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(7, 7));
+            cv.morphologyEx(paperMask, closed, cv.MORPH_CLOSE, kernel);
+
+            cv.findContours(closed, contours, new cv.Mat(), cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+            let cands = collectQuadsFromContours(contours, imgArea, eps, 0.08, 'color_mask');
+
+            // 若轮廓太毛刺无法近似成四边形，用最大外接矩形兜底
+            if (!cands.length) {
+                let maxCnt = null, maxArea = 0;
+                for (let i = 0; i < contours.size(); i++) {
+                    const cnt = contours.get(i);
+                    const area = cv.contourArea(cnt);
+                    if (area > maxArea) { maxArea = area; maxCnt = cnt; }
+                }
+                if (maxCnt && maxArea > imgArea * 0.08) {
+                    const rect = cv.minAreaRect(maxCnt);
+                    const box = cv.RotatedRect.points(rect);
+                    cands = [{ quad: orderCorners(box.map(p => [p.x, p.y])), score: 0, areaPct: maxArea / imgArea }];
+                }
+            }
+
+            rgb.delete(); hsv.delete(); paperMask.delete(); closed.delete();
+            contours.delete(); kernel.delete(); lower.delete(); upper.delete();
+            return findBestQuad(cands);
+        }
+
+        /** 亚像素级角点精修：在近似四角附近搜索更精确的边缘交点 */
+        function refineCorners(src, quad) {
+            const gray = new cv.Mat();
+            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+            const cornersMat = cv.matFromArray(4, 1, cv.CV_32FC2, quad.flat());
+            const winSize = new cv.Size(5, 5);
+            const zeroZone = new cv.Size(-1, -1);
+            const criteria = new cv.TermCriteria(
+                cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 30, 0.01);
+            try {
+                cv.cornerSubPix(gray, cornersMat, winSize, zeroZone, criteria);
+            } catch (e) { /* 精修失败则沿用原角点 */ }
+            const refined = [];
+            for (let i = 0; i < 4; i++) {
+                const x = Math.max(0, Math.min(src.cols - 1, cornersMat.data32F[i * 2]));
+                const y = Math.max(0, Math.min(src.rows - 1, cornersMat.data32F[i * 2 + 1]));
+                refined.push([x, y]);
+            }
+            gray.delete();
+            cornersMat.delete();
+            return orderCorners(refined);
+        }
+
+        /** 综合多种策略，按评分选最优四角 */
+        function detectCorners(src) {
+            const imgArea = src.rows * src.cols;
+            const { w, h } = getPaperSize();
+            dbgLog('A', 'scan.html:detectCorners', 'start', {
+                imgW: src.cols, imgH: src.rows, paperW: w, paperH: h
+            });
+
+            // 先尝试颜色分割：白纸在彩色背景上是最可靠的线索
+            const colorQuad = detectFromColorMask(src, 0.02);
+            if (colorQuad) {
+                const colorScore = scoreQuad(colorQuad, imgArea);
+                dbgLog('A', 'scan.html:detectCorners', 'color_mask candidate', {
+                    score: colorScore, corners: colorQuad, areaPct: quadArea(colorQuad) / imgArea
+                });
+                if (colorScore > 0) {
+                    lastStrategy = 'color_mask';
+                    return refineCorners(src, colorQuad);
+                }
+            }
+
+            // 颜色分割失败再跑其他策略兜底
+            const all = [];
+            const strategies = [
+                { name: 'canny_50_150', fn: () => detectFromCanny(src, 50, 150, 0.02) },
+                { name: 'canny_30_100', fn: () => detectFromCanny(src, 30, 100, 0.015) },
+                { name: 'canny_75_200', fn: () => detectFromCanny(src, 75, 200, 0.025) },
+                { name: 'bright_otsu', fn: () => detectFromBrightRegion(src, 0.02) },
+                { name: 'adaptive', fn: () => detectFromAdaptive(src, 0.02) },
+                { name: 'minAreaRect', fn: () => detectFromMinAreaRect(src) }
+            ];
+
+            for (const { name, fn } of strategies) {
+                const quad = fn();
+                if (!quad) {
+                    dbgLog('E', 'scan.html:detectCorners', 'strategy no quad', { strategy: name });
+                    continue;
+                }
+                const score = scoreQuad(quad, imgArea);
+                dbgLog('E', 'scan.html:detectCorners', 'strategy result', {
+                    strategy: name, score, corners: quad, areaPct: quadArea(quad) / imgArea
+                });
+                if (score > 0) all.push({ quad, score, strategy: name });
+            }
+
+            if (!all.length) {
+                dbgLog('A', 'scan.html:detectCorners', 'FAILED no candidates', {});
+                return null;
+            }
+            all.sort((a, b) => b.score - a.score);
+            dbgLog('A', 'scan.html:detectCorners', 'winner', {
+                strategy: all[0].strategy, score: all[0].score, corners: all[0].quad,
+                runnerUp: all[1] ? { strategy: all[1].strategy, score: all[1].score } : null
+            });
+            // 亚像素级角点精修，提升定位精度
+            lastStrategy = all[0].strategy;
+            return refineCorners(src, all[0].quad);
+        }
+
+        function matCorners(flat) {
+            return cv.matFromArray(4, 1, cv.CV_32FC2, flat);
+        }
+
+        function getWarpSize() {
+            const { w, h } = getPaperSize();
+            return { warpW: WARP_SIZE, warpH: Math.round(WARP_SIZE * h / w) };
+        }
+
+        function warpPaper(src, c) {
+            const { warpW, warpH } = getWarpSize();
+            const srcTri = matCorners(c.flat());
+            const dstTri = matCorners([0, 0, warpW, 0, warpW, warpH, 0, warpH]);
+            const M = cv.getPerspectiveTransform(srcTri, dstTri);
+            const warped = new cv.Mat();
+            cv.warpPerspective(src, warped, M, new cv.Size(warpW, warpH));
+            srcTri.delete(); dstTri.delete();
+            return { warped, M, warpW, warpH };
+        }
+
+        function detectMarkers(warped, warpW, warpH) {
+            const { minArea, maxArea } = getAreaThresholds();
+            const { w: paperW, h: paperH } = getPaperSize();
+            const scaleX = paperW / warpW, scaleY = paperH / warpH;
+            const margin = 0.04;
+            const found = [];
+
+            const gray = new cv.Mat();
+            const blurred = new cv.Mat();
+            cv.cvtColor(warped, gray, cv.COLOR_RGBA2GRAY);
+            cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+
+            for (const mode of ['dark', 'bright']) {
+                const binary = new cv.Mat();
+                cv.threshold(blurred, binary, 0, 255,
+                    mode === 'dark' ? cv.THRESH_BINARY_INV + cv.THRESH_OTSU : cv.THRESH_BINARY + cv.THRESH_OTSU);
+
+                const contours = new cv.MatVector();
+                cv.findContours(binary, contours, new cv.Mat(), cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+                for (let i = 0; i < contours.size(); i++) {
+                    const cnt = contours.get(i);
+                    const paperArea = cv.contourArea(cnt) * scaleX * scaleY;
+                    if (paperArea < minArea || paperArea > maxArea) continue;
+
+                    const Mo = cv.moments(cnt);
+                    if (Mo.m00 === 0) continue;
+                    const cx = Mo.m10 / Mo.m00, cy = Mo.m01 / Mo.m00;
+                    if (cx < warpW * margin || cx > warpW * (1 - margin) ||
+                        cy < warpH * margin || cy > warpH * (1 - margin)) continue;
+
+                    found.push({ warpX: cx, warpY: cy, paperX: cx * scaleX, paperY: cy * scaleY, area: paperArea });
+                }
+                binary.delete(); contours.delete();
+            }
+            gray.delete(); blurred.delete();
+            return dedupeMarkers(found);
+        }
+
+        function dedupeMarkers(list) {
+            const minDist = Math.min(getPaperSize().w, getPaperSize().h) * 0.03;
+            const kept = [];
+            list.sort((a, b) => b.area - a.area);
+            for (const m of list) {
+                if (!kept.some(k => Math.hypot(k.paperX - m.paperX, k.paperY - m.paperY) < minDist)) kept.push(m);
+            }
+            return kept;
+        }
+
+        function warpToImage(M, wx, wy) {
+            const Minv = new cv.Mat();
+            cv.invert(M, Minv, cv.DECOMP_LU);
+            const pt = cv.matFromArray(1, 1, cv.CV_32FC2, [wx, wy]);
+            const out = new cv.Mat();
+            cv.perspectiveTransform(pt, out, Minv);
+            const r = { x: out.data32F[0], y: out.data32F[1] };
+            Minv.delete(); pt.delete(); out.delete();
+            return r;
+        }
+
+        function paperToImage(px, py) {
+            if (!corners) return null;
+            const { warpW, warpH } = getWarpSize();
+            const { w, h } = getPaperSize();
+            const srcTri = matCorners([0, 0, warpW, 0, warpW, warpH, 0, warpH]);
+            const dstTri = matCorners(corners.flat());
+            const M = cv.getPerspectiveTransform(srcTri, dstTri);
+            const pt = cv.matFromArray(1, 1, cv.CV_32FC2, [px / w * warpW, py / h * warpH]);
+            const out = new cv.Mat();
+            cv.perspectiveTransform(pt, out, M);
+            const r = { x: out.data32F[0], y: out.data32F[1] };
+            srcTri.delete(); dstTri.delete(); M.delete(); pt.delete(); out.delete();
+            return r;
+        }
+
+        function runDetection(src) {
+            if (!corners) { markers = []; return; }
+            const { warped, M, warpW, warpH } = warpPaper(src, corners);
+            const raw = detectMarkers(warped, warpW, warpH);
+            const { w, h } = getPaperSize();
+            const cx = w / 2, cy = h / 2;
+
+            markers = raw.map(m => {
+                const img = warpToImage(M, m.warpX, m.warpY);
+                return {
+                    imgX: img.x, imgY: img.y,
+                    paperX: m.paperX, paperY: m.paperY,
+                    area: m.area, warpX: m.warpX, warpY: m.warpY,
+                    dist: Math.hypot(m.paperX - cx, m.paperY - cy)
+                };
+            });
+            warped.delete(); M.delete();
+        }
+
+        function drawOrig() {
+            if (!imgEl) return;
+            canvasOrig.width = imgEl.naturalWidth;
+            canvasOrig.height = imgEl.naturalHeight;
+            ctxOrig.drawImage(imgEl, 0, 0);
+            const r = Math.max(3, canvasOrig.width / 200);
+
+            if (corners) {
+                ctxOrig.strokeStyle = '#22c55e';
+                ctxOrig.lineWidth = Math.max(2, canvasOrig.width / 400);
+                ctxOrig.beginPath();
+                ctxOrig.moveTo(corners[0][0], corners[0][1]);
+                for (let i = 1; i < 4; i++) ctxOrig.lineTo(corners[i][0], corners[i][1]);
+                ctxOrig.closePath();
+                ctxOrig.stroke();
+                corners.forEach(([x, y], i) => {
+                    ctxOrig.fillStyle = '#22c55e';
+                    ctxOrig.beginPath();
+                    ctxOrig.arc(x, y, r, 0, Math.PI * 2);
+                    ctxOrig.fill();
+                    ctxOrig.fillStyle = '#fff';
+                    ctxOrig.font = `bold ${Math.max(10, r * 2)}px sans-serif`;
+                    ctxOrig.textAlign = 'center';
+                    ctxOrig.textBaseline = 'middle';
+                    ctxOrig.fillText(String(i + 1), x, y);
+                });
+            }
+
+            const centerImg = corners ? paperToImage(getPaperSize().w / 2, getPaperSize().h / 2) : null;
+            if (centerImg) {
+                ctxOrig.fillStyle = '#2563eb';
+                ctxOrig.beginPath();
+                ctxOrig.arc(centerImg.x, centerImg.y, r + 2, 0, Math.PI * 2);
+                ctxOrig.fill();
+            }
+
+            markers.forEach((m, i) => {
+                if (centerImg) {
+                    ctxOrig.strokeStyle = 'rgba(220,38,38,0.5)';
+                    ctxOrig.setLineDash([4, 3]);
+                    ctxOrig.beginPath();
+                    ctxOrig.moveTo(centerImg.x, centerImg.y);
+                    ctxOrig.lineTo(m.imgX, m.imgY);
+                    ctxOrig.stroke();
+                    ctxOrig.setLineDash([]);
+                }
+                ctxOrig.fillStyle = '#dc2626';
+                ctxOrig.beginPath();
+                ctxOrig.arc(m.imgX, m.imgY, r, 0, Math.PI * 2);
+                ctxOrig.fill();
+                ctxOrig.fillStyle = '#fff';
+                ctxOrig.font = `bold ${Math.max(10, r * 2)}px sans-serif`;
+                ctxOrig.textAlign = 'center';
+                ctxOrig.textBaseline = 'middle';
+                ctxOrig.fillText(String(i + 1), m.imgX, m.imgY);
+            });
+        }
+
+        function drawWarp(src) {
+            if (!corners) {
+                canvasWarp.width = 300; canvasWarp.height = 200;
+                ctxWarp.fillStyle = '#f5f5f5';
+                ctxWarp.fillRect(0, 0, 300, 200);
+                return;
+            }
+            const { warped, warpW, warpH } = warpPaper(src, corners);
+            canvasWarp.width = warpW; canvasWarp.height = warpH;
+            cv.imshow(canvasWarp, warped);
+
+            const cx = warpW / 2, cy = warpH / 2;
+            ctxWarp.fillStyle = '#2563eb';
+            ctxWarp.beginPath();
+            ctxWarp.arc(cx, cy, 6, 0, Math.PI * 2);
+            ctxWarp.fill();
+
+            markers.forEach((m, i) => {
+                ctxWarp.strokeStyle = 'rgba(220,38,38,0.45)';
+                ctxWarp.beginPath();
+                ctxWarp.moveTo(cx, cy);
+                ctxWarp.lineTo(m.warpX, m.warpY);
+                ctxWarp.stroke();
+                ctxWarp.fillStyle = '#dc2626';
+                ctxWarp.beginPath();
+                ctxWarp.arc(m.warpX, m.warpY, 5, 0, Math.PI * 2);
+                ctxWarp.fill();
+                ctxWarp.fillStyle = '#fff';
+                ctxWarp.font = 'bold 11px sans-serif';
+                ctxWarp.textAlign = 'center';
+                ctxWarp.textBaseline = 'middle';
+                ctxWarp.fillText(String(i + 1), m.warpX, m.warpY);
+            });
+            warped.delete();
+        }
+
+        function updateTable() {
+            if (!markers.length) {
+                resultTable.style.display = 'none';
+                summaryEl.textContent = corners
+                    ? '四角已自动标定；未检测到标记点，可调整点面积范围后重新识别'
+                    : '';
+                return;
+            }
+            resultTable.style.display = '';
+            resultBody.innerHTML = markers.map((m, i) =>
+                `<tr><td>${i + 1}</td><td>${m.paperX.toFixed(2)}</td><td>${m.paperY.toFixed(2)}</td>
+                 <td>${m.area.toFixed(2)}</td><td>${m.dist.toFixed(2)}</td></tr>`
+            ).join('');
+            const { w, h } = getPaperSize();
+            summaryEl.textContent = `共 ${markers.length} 个点 | 纸心 (${(w/2).toFixed(2)}, ${(h/2).toFixed(2)})`;
+        }
+
+        function fullPipeline(redetectCorners = true) {
+            if (!imgEl || !cvReady) return;
+            const src = cv.imread(imgEl);
+
+            if (redetectCorners) corners = detectCorners(src);
+
+            dbgLog('A', 'scan.html:fullPipeline', 'pipeline done', {
+                cornersFound: !!corners, corners, markerCount: markers.length
+            });
+
+            if (corners) {
+                runDetection(src);
+                statusEl.textContent = `自动标定完成：四角已定位，检测到 ${markers.length} 个标记点（策略：${lastStrategy}）`;
+            } else {
+                markers = [];
+                statusEl.textContent = '未能自动标定四角，请确保纸张与背景对比明显、四边完整可见，然后重新识别';
+            }
+
+            src.delete();
+            btnRerun.disabled = false;
+            drawOrig();
+            if (corners) {
+                const src2 = cv.imread(imgEl);
+                drawWarp(src2);
+                src2.delete();
+            } else {
+                drawWarp(null);
+            }
+            updateTable();
+        }
+
+        fileInput.addEventListener('change', (e) => {
+            if (!cvReady) return;
+            const file = e.target.files[0];
+            if (!file) return;
+            const img = new Image();
+            img.onload = () => { imgEl = img; fullPipeline(true); };
+            img.src = URL.createObjectURL(file);
+        });
+
+        btnRerun.addEventListener('click', () => fullPipeline(true));
+
+        ['paperW', 'paperH', 'minAreaPct', 'maxAreaPct'].forEach((id) => {
+            document.getElementById(id).addEventListener('change', () => {
+                if (imgEl && corners) fullPipeline(false);
+            });
+        });
+
+        // 手动拖拽四角修正（自动识别不准时的兜底）
+        let dragIdx = -1;
+        function clientToCanvas(canvas, e) {
+            const rect = canvas.getBoundingClientRect();
+            const sx = canvas.width / rect.width;
+            const sy = canvas.height / rect.height;
+            return { x: (e.clientX - rect.left) * sx, y: (e.clientY - rect.top) * sy };
+        }
+        function nearestCorner(x, y) {
+            let best = -1, bestD = Infinity;
+            const r = Math.max(15, canvasOrig.width / 80);
+            corners.forEach(([cx, cy], i) => {
+                const d = Math.hypot(cx - x, cy - y);
+                if (d < r && d < bestD) { bestD = d; best = i; }
+            });
+            return best;
+        }
+        canvasOrig.addEventListener('mousedown', (e) => {
+            if (!corners) return;
+            const p = clientToCanvas(canvasOrig, e);
+            dragIdx = nearestCorner(p.x, p.y);
+            if (dragIdx >= 0) canvasOrig.style.cursor = 'grabbing';
+        });
+        canvasOrig.addEventListener('mousemove', (e) => {
+            if (!corners) return;
+            const p = clientToCanvas(canvasOrig, e);
+            if (dragIdx >= 0) {
+                corners[dragIdx] = [p.x, p.y];
+                drawOrig(); // 实时预览，松手后再重算
+            } else {
+                canvasOrig.style.cursor = nearestCorner(p.x, p.y) >= 0 ? 'grab' : 'default';
+            }
+        });
+        function endDrag() {
+            if (dragIdx >= 0) {
+                dragIdx = -1;
+                canvasOrig.style.cursor = 'default';
+                fullPipeline(false); // 用修正后的四角重新测距并矫正
+            }
+        }
+        canvasOrig.addEventListener('mouseup', endDrag);
+        canvasOrig.addEventListener('mouseleave', endDrag);
+    </script>
+</body>
+</html>
