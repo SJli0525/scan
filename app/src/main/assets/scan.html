@@ -102,6 +102,14 @@ body {
 </div>
 
 <div class="card">
+  <div class="card-title">纸张类型</div>
+  <div class="btn-group">
+    <button class="btn btn-secondary paper-type" data-type="white" style="flex:1;padding:8px">⚪ 白色纸</button>
+    <button class="btn btn-primary paper-type" data-type="brown" style="flex:1;padding:8px">🟫 棕色纸</button>
+  </div>
+</div>
+
+<div class="card">
   <div class="card-title">纸张参数</div>
   <div class="param-grid">
     <div class="param-item">
@@ -150,6 +158,38 @@ body {
   </div>
 </div>
 
+<div class="card">
+  <div class="card-title">📐 C3 / C4 计算</div>
+  <div class="param-grid" style="grid-template-columns:1fr 1fr 1fr;gap:8px">
+    <div class="param-item">
+      <label>K</label>
+      <input type="number" id="formulaK" value="0.615" step="any">
+    </div>
+    <div class="param-item">
+      <label>m 起始</label>
+      <input type="number" id="formulaMStart" value="0" step="any">
+    </div>
+    <div class="param-item">
+      <label>m 终止</label>
+      <input type="number" id="formulaMEnd" value="5" step="any">
+    </div>
+  </div>
+  <div class="row" style="margin-top:6px;font-size:12px;color:#6b7280;justify-content:space-between">
+    <span>ex (mm)</span><span>ey (mm)</span><span>m</span><span style="width:24px"></span>
+  </div>
+  <div id="formulaRows"></div>
+  <div class="btn-group" style="margin-top:8px">
+    <button class="btn btn-secondary" id="btnAddRow" style="flex:1;padding:8px">+ 添加一行</button>
+    <button class="btn btn-secondary" id="btnFromPoints" style="flex:1;padding:8px">⬇ 从检测点导入</button>
+  </div>
+  <div class="btn-group" style="margin-top:8px">
+    <button class="btn btn-primary" id="btnCalcC3" style="flex:1">计算 C3</button>
+    <button class="btn btn-primary" id="btnCalcC4" style="flex:1">计算 C4</button>
+  </div>
+  <div id="formulaResult" style="margin-top:12px;padding:10px;background:#f9fafb;border-radius:8px;text-align:center;font-size:15px;font-weight:600;color:#1f2937;min-height:20px">结果会显示在这里</div>
+  <div class="hint" style="margin-top:6px;font-size:12px">公式：C = √[Σ(m²−1)·K/(1−m)]，按数据行求和（m 可手动改）</div>
+</div>
+
 <div class="hint">上传后自动标定纸张四角、检测标记点。若四角不准，可手指在图上拖拽绿色角点手动修正。结果可复制到 Excel 或下载 CSV 文件</div>
 
 <script async src="opencv.js" onload="onOpenCvReady()"></script>
@@ -159,6 +199,7 @@ let imgEl = null;
 let corners = null;
 let markers = [];
 let lastStrategy = '';
+let paperType = 'brown';  // 默认棕色纸
 const WARP_SIZE = 1000;
 
 const $ = id => document.getElementById(id);
@@ -308,14 +349,21 @@ function detectFromMinAreaRect(src){
   gray.delete();blurred.delete();binary.delete();contours.delete(); return quad;
 }
 
-function detectFromColorMask(src,eps){
+function detectFromColorMask(src,eps,paperType){
   const rgb=new cv.Mat(),hsv=new cv.Mat(),paperMask=new cv.Mat(),closed=new cv.Mat(),contours=new cv.MatVector();
   const imgArea=src.rows*src.cols; cv.cvtColor(src,rgb,cv.COLOR_RGBA2RGB); cv.cvtColor(rgb,hsv,cv.COLOR_RGB2HSV);
-  const lower=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[0,0,170,0]); const upper=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[179,70,255,255]);
+  // HSV 范围：白色纸（低饱和+高亮）；棕色/牛皮纸（橙黄色调）
+  let lo,hi;
+  if(paperType==='brown'){
+    lo=[10,25,50,0]; hi=[45,180,200,255];
+  }else{
+    lo=[0,0,170,0]; hi=[179,70,255,255];
+  }
+  const lower=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),lo); const upper=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),hi);
   cv.inRange(hsv,lower,upper,paperMask); const kernel=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(7,7));
   cv.morphologyEx(paperMask,closed,cv.MORPH_CLOSE,kernel);
   cv.findContours(closed,contours,new cv.Mat(),cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
-  let cands=collectQuadsFromContours(contours,imgArea,eps,0.08,'color_mask');
+  let cands=collectQuadsFromContours(contours,imgArea,eps,0.08,'color_mask_'+paperType);
   if(!cands.length){let maxCnt=null,maxArea=0;for(let i=0;i<contours.size();i++){const cnt=contours.get(i);const area=cv.contourArea(cnt);if(area>maxArea){maxArea=area;maxCnt=cnt;}}if(maxCnt&&maxArea>imgArea*0.08){const rect=cv.minAreaRect(maxCnt);cands=[{quad:orderCorners(cv.RotatedRect.points(rect).map(p=>[p.x,p.y])),score:0,areaPct:maxArea/imgArea}];}}
   rgb.delete();hsv.delete();paperMask.delete();closed.delete();contours.delete();kernel.delete();lower.delete();upper.delete();
   return findBestQuad(cands);
@@ -331,7 +379,7 @@ function refineCorners(src, quad) {
 
 function detectCorners(src) {
   const imgArea=src.rows*src.cols,{w,h}=getPaperSize();
-  const colorQuad=detectFromColorMask(src,0.02); if(colorQuad){const s=scoreQuad(colorQuad,imgArea);if(s>0){lastStrategy='color_mask';return refineCorners(src,colorQuad);}}
+  const colorQuad=detectFromColorMask(src,0.02,paperType); if(colorQuad){const s=scoreQuad(colorQuad,imgArea);if(s>0){lastStrategy='color_mask_'+paperType;return refineCorners(src,colorQuad);}}
   const all=[];
   const strats=[
     ()=>{const q=detectFromCanny(src,50,150,0.02);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'canny_50_150'});}},
@@ -485,7 +533,90 @@ $('btnCsv').addEventListener('click',()=>{
   document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
   setStatus('CSV 已开始下载','success');
 });
+
+// --- C3 / C4 公式计算 ---
+let formulaRows = [];
+
+function renderFormulaRows(){
+  const c = $('formulaRows');
+  if(!formulaRows.length){
+    c.innerHTML = '<p style="text-align:center;color:#9ca3af;font-size:13px;padding:8px">点击"添加一行"输入数据，或"从检测点导入"</p>';
+    return;
+  }
+  c.innerHTML = formulaRows.map((r,i)=>`
+    <div class="param-grid" style="grid-template-columns:1fr 1fr 1fr 28px;gap:4px;margin-top:4px">
+      <input type="number" step="any" data-idx="${i}" data-field="ex" value="${r.ex||''}" placeholder="ex" style="padding:6px;font-size:14px">
+      <input type="number" step="any" data-idx="${i}" data-field="ey" value="${r.ey||''}" placeholder="ey" style="padding:6px;font-size:14px">
+      <input type="number" step="any" data-idx="${i}" data-field="m" value="${r.m===''?'':r.m}" placeholder="m" style="padding:6px;font-size:14px">
+      <button data-idx="${i}" data-action="del" style="background:#ef4444;color:#fff;border:none;border-radius:6px;font-size:14px;padding:0">×</button>
+    </div>`).join('');
+  c.querySelectorAll('input').forEach(inp=>inp.addEventListener('change',e=>{
+    const i = +e.target.dataset.idx, f = e.target.dataset.field;
+    formulaRows[i][f] = e.target.value;
+  }));
+  c.querySelectorAll('[data-action="del"]').forEach(btn=>btn.addEventListener('click',e=>{
+    formulaRows.splice(+e.target.dataset.idx,1); renderFormulaRows();
+  }));
+}
+
+$('btnAddRow').addEventListener('click',()=>{
+  formulaRows.push({ex:'',ey:'',m:formulaRows.length});
+  renderFormulaRows();
+});
+
+$('btnFromPoints').addEventListener('click',()=>{
+  if(!markers.length){setStatus('还没有检测到点','error');return;}
+  const{w,h}=getPaperSize(); const cx=w/2,cy=h/2;
+  formulaRows = markers.map((m,i)=>({ex:(m.paperX-cx).toFixed(3),ey:(m.paperY-cy).toFixed(3),m:i}));
+  renderFormulaRows();
+  setStatus(`已从 ${markers.length} 个检测点导入数据`,'success');
+});
+
+function calcC(which){
+  const K = parseFloat($('formulaK').value);
+  const mStart = parseFloat($('formulaMStart').value);
+  const mEnd = parseFloat($('formulaMEnd').value);
+  if(isNaN(K)){$('formulaResult').textContent='请输入有效的 K';return;}
+  const rows = formulaRows.filter(r=>{
+    const ex=parseFloat(r.ex),ey=parseFloat(r.ey);
+    return !isNaN(ex)&&!isNaN(ey);
+  });
+  if(!rows.length){$('formulaResult').textContent='请至少输入一行 ex/ey 数据';return;}
+
+  // m 决定公式形态：
+  // C3 (基础): m = 数据行序号 (0,1,2,...)
+  // C4 (或): m = 行序号，但 m 范围 mStart~mEnd 之外的项跳过
+  let sum = 0, used = 0;
+  rows.forEach((r,i)=>{
+    const m = !isNaN(parseFloat(r.m)) ? parseFloat(r.m) : i;
+    if(m < mStart || m > mEnd) return;
+    if(m === 1) return;  // (1-m) 不能为零
+    const term = (m*m - 1) * K / (1 - m);
+    sum += term; used++;
+  });
+
+  if(used === 0){$('formulaResult').textContent='当前 m 范围内没有有效数据';return;}
+
+  if(sum < 0){
+    $('formulaResult').innerHTML = `${which} = √(${sum.toFixed(4)})<br><span style="color:#b91c1c;font-size:13px;font-weight:normal">负数无实数根，检查 m 取值</span>`;
+    return;
+  }
+  const result = Math.sqrt(sum);
+  $('formulaResult').innerHTML = `${which} = ${result.toFixed(4)}<br><span style="color:#6b7280;font-size:12px;font-weight:normal">Σ 项数: ${used} | 累加: ${sum.toFixed(4)}</span>`;
+}
+
+$('btnCalcC3').addEventListener('click',()=>calcC('C3'));
+$('btnCalcC4').addEventListener('click',()=>calcC('C4'));
+renderFormulaRows();
 ['paperW','paperH','minAreaPct','maxAreaPct'].forEach(id=>{document.getElementById(id).addEventListener('change',()=>{if(imgEl&&corners)fullPipeline(false);});});
+
+// 纸张类型切换
+document.querySelectorAll('.paper-type').forEach(btn=>btn.addEventListener('click',()=>{
+  paperType=btn.dataset.type;
+  document.querySelectorAll('.paper-type').forEach(b=>{b.classList.remove('btn-primary');b.classList.add('btn-secondary');});
+  btn.classList.remove('btn-secondary');btn.classList.add('btn-primary');
+  if(imgEl)fullPipeline(true);
+}));
 
 // --- Touch & mouse corner drag ---
 function getCanvasPt(canvas,e){
