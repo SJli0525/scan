@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>纸张测距</title>
+<title>纸张测距 v1.1</title>
 <style>
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { -webkit-user-select: none; user-select: none; }
@@ -107,6 +107,30 @@ body {
 <body>
 
 <div id="status">正在加载 OpenCV…</div>
+<script>
+var cvReady = false, cvNoOpencv = false;
+function onOpenCvReady(){
+  var st=document.getElementById('status');
+  if(st){st.textContent='OpenCV 已就绪，请选择或拍摄照片';st.className='success';}
+  document.querySelectorAll('.fileInput').forEach(function(fi){fi.disabled=false;});
+  cvReady=true;
+}
+setTimeout(function(){
+  if(typeof cv==='undefined'||!cvReady){
+    var s=document.getElementById('status');
+    if(s){
+      s.innerHTML='OpenCV 加载超时 <button onclick="skipOpenCv()" style="margin-left:8px;padding:4px 12px;border:none;border-radius:6px;background:#3b82f6;color:#fff;font-size:13px">跳过 → 手动模式</button>';
+      s.className='error';
+    }
+  }
+},8000);
+function skipOpenCv(){
+  cvReady=true;cvNoOpencv=true;
+  document.querySelectorAll('.fileInput').forEach(function(fi){fi.disabled=false;});
+  var st=document.getElementById('status');
+  if(st){st.textContent='已跳过 OpenCV，可使用手动标定四角 + 添加标记点';st.className='warn';}
+}
+</script>
 
 <div class="card">
   <div class="card-title">选择图片</div>
@@ -213,9 +237,8 @@ body {
   <button class="btn btn-danger btn-secondary" id="btnClear" style="font-size:13px;padding:6px 16px">🗑 清除全部</button>
 </div>
 
-<script async src="opencv.js" onload="onOpenCvReady()"></script>
+<script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady()"></script>
 <script>
-let cvReady = false;
 let imgEl = null;
 let corners = null;
 let markers = [];
@@ -508,20 +531,23 @@ function fullPipeline(redetectCorners=true){
   if(redetectCorners)setStatus('识别中…','processing');
   showLoading(true);
   setTimeout(()=>{
-    const src=cv.imread(imgEl);
-    if(redetectCorners)corners=detectCorners(src);
-    if(corners){
-      runDetection(src);
-      setStatus(`四角已标定 (${lastStrategy})，检测到 ${markers.length} 个标记点`,'success');
-      $('btnManual').style.display='none';
-      $('btnAddPoint').disabled=false;
+    if(!cvNoOpencv&&typeof cv!=='undefined'){
+      const src=cv.imread(imgEl);
+      if(redetectCorners)corners=detectCorners(src);
+      if(corners){
+        runDetection(src);
+        setStatus(`四角已标定 (${lastStrategy})，检测到 ${markers.length} 个标记点`,'success');
+        $('btnManual').style.display='none';$('btnAddPoint').disabled=false;
+      }else{
+        markers=[];setStatus('未能自动标定四角，请确保纸张与背景对比明显','error');
+        $('btnManual').style.display='';$('btnAddPoint').disabled=true;
+      }
+      src.delete();
+      if(corners){const src2=cv.imread(imgEl);drawWarp(src2);src2.delete();}else drawWarp(null);
     }else{
-      markers=[];setStatus('未能自动标定四角，请确保纸张与背景对比明显','error');
-      $('btnManual').style.display='';
-      $('btnAddPoint').disabled=true;
+      drawOrig();drawWarp(null);
+      if(corners)setStatus('四角已标定（手动）','success');
     }
-    src.delete();btnRerun.disabled=false;drawOrig();
-    if(corners){const src2=cv.imread(imgEl);drawWarp(src2);src2.delete();}else drawWarp(null);
     updateResults();
     showLoading(false);
     // 自动滚动到结果
@@ -785,7 +811,6 @@ $('btnClear').addEventListener('click',()=>{
   setStatus('已清除，请选择或拍摄照片');
 });
 
-function onOpenCvReady(){cvReady=true;setStatus('OpenCV 已就绪，请选择或拍摄照片');fileInputs.forEach(fi=>fi.disabled=false);}
 </script>
 </body>
 </html>
