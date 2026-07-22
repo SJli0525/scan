@@ -706,7 +706,7 @@ $('btnManual').addEventListener('click', enterManualMode);
 
 // --- 手动添加标记点 ---
 let addPointMode = false;
-let zoomScale = 1, zoomX = 0, zoomY = 0, multiTouch = 0, lastPinch=0;
+let zoomScale = 1, zoomX = 0, zoomY = 0;
 
 function applyZoom(){
   var w=$('canvasOrigWrap');
@@ -814,21 +814,10 @@ function onDragMove(e){if(!corners||dragIdx<0)return;
   e.preventDefault();const p=getCanvasPt(canvasOrig,e);corners[dragIdx]=[p.x,p.y];drawOrig();}
 
 function onDragEnd(e){
-  if(dragIdx>=0){canvasOrig.style.touchAction='';dragIdx=-1;fullPipeline(false);return;}
-  // 添加点模式：多点触控时跳过，仅单指松手加点
-  if(addPointMode&&multiTouch<=1){
-    if(e.button!==undefined&&e.button!==0)return; // 跳过右键
-    e=e||window.event;
-    var pt=e.changedTouches?{clientX:e.changedTouches[0].clientX,clientY:e.changedTouches[0].clientY}:e;
-    doAddPoint(pt);
-  }
+  if(dragIdx>=0){canvasOrig.style.touchAction='';dragIdx=-1;fullPipeline(false);}
 }
 
 // touch
-document.addEventListener('touchstart',function(){multiTouch++;},true);
-document.addEventListener('touchend',function(){if(multiTouch>0)multiTouch--;},true);
-canvasOrig.addEventListener('touchstart',function(e){if(addPointMode&&e.touches.length===2){var d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);lastPinch=d;}},{passive:true});
-canvasOrig.addEventListener('touchmove',function(e){if(addPointMode&&e.touches.length===2){e.preventDefault();var d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);if(lastPinch>0){var s=d/lastPinch;zoomScale=Math.max(1,Math.min(5,zoomScale*s));applyZoom();}lastPinch=d;}},{passive:false});
 canvasOrig.addEventListener('touchstart',onDragStart,{passive:false});
 canvasOrig.addEventListener('touchmove',onDragMove,{passive:false});
 canvasOrig.addEventListener('touchend',onDragEnd);
