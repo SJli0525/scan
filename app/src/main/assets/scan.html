@@ -754,47 +754,36 @@ $('btnAddPoint').addEventListener('click',()=>{
   }
 });
 
+function doAddPoint(e){
+  if(!addPointMode||!imgEl||!cvReady)return;
+  if(!corners){setStatus('请先标定四角','error');return;}
+  if(cvNoOpencv||typeof cv==='undefined'){setStatus('添加点需要 OpenCV','error');return;}
+  var p=getCanvasPt(canvasOrig,e);
+  var pp=imageToPaper(p.x,p.y);
+  if(!pp)return;
+  var w=getPaperSize().w,h=getPaperSize().h;
+  markers.push({imgX:p.x,imgY:p.y,paperX:pp.paperX,paperY:pp.paperY,area:0,dist:Math.hypot(pp.paperX-w/2,pp.paperY-h/2)});
+  drawOrig();
+  var s=cv.imread(imgEl);drawWarp(s);s.delete();
+  updateResults();
+  setStatus('已添加点 '+markers.length+'，继续或点"✅ 完成添加"','warn');
+}
+
 function onCanvasTap(e){
   if(!imgEl||!cvReady)return;
   e.preventDefault();
-  const p=getCanvasPt(canvasOrig,e);
-
-  // 手动标定四角模式
+  var p=getCanvasPt(canvasOrig,e);
   if(manualMode){
     manualPts.push([p.x, p.y]);
     drawOrig();
-    const r=Math.max(8,canvasOrig.width/100);
-    ctxOrig.fillStyle='#22c55e';
-    ctxOrig.beginPath();ctxOrig.arc(p.x,p.y,r+4,0,Math.PI*2);ctxOrig.fill();
-    ctxOrig.fillStyle='#fff';
-    ctxOrig.font=`bold ${Math.max(12,r)}px sans-serif`;
-    ctxOrig.textAlign='center';ctxOrig.textBaseline='middle';
+    var r=Math.max(8,canvasOrig.width/100);
+    ctxOrig.fillStyle='#22c55e';ctxOrig.beginPath();ctxOrig.arc(p.x,p.y,r+4,0,Math.PI*2);ctxOrig.fill();
+    ctxOrig.fillStyle='#fff';ctxOrig.font='bold '+Math.max(12,r)+'px sans-serif';ctxOrig.textAlign='center';ctxOrig.textBaseline='middle';
     ctxOrig.fillText(String(manualPts.length),p.x,p.y);
-    if(manualPts.length>=4){
-      corners=orderCorners(manualPts);
-      manualMode=false;manualPts=[];
-      fullPipeline(false);
-    }
+    if(manualPts.length>=4){corners=orderCorners(manualPts);manualMode=false;manualPts=[];fullPipeline(false);}
     return;
   }
-
-  // 手动添加标记点模式
-  if(addPointMode){
-    if(!corners){setStatus('请先标定四角（自动识别或点"✋ 手动标定四角"）','error');return;}
-    if(cvNoOpencv||typeof cv==='undefined'){setStatus('添加点需要 OpenCV，请等待加载或重新打开','error');return;}
-    const p=getCanvasPt(canvasOrig,e);
-    const pp=imageToPaper(p.x,p.y);
-    if(!pp)return;
-    const{w,h}=getPaperSize();
-    markers.push({
-      imgX:p.x,imgY:p.y,paperX:pp.paperX,paperY:pp.paperY,
-      area:0,dist:Math.hypot(pp.paperX-w/2,pp.paperY-h/2)
-    });
-    drawOrig();
-    const s=cv.imread(imgEl);drawWarp(s);s.delete();
-    updateResults();
-    setStatus(`已添加点 ${markers.length}，继续点击或点"✅ 完成添加"结束`,'warn');
-  }
+  if(addPointMode){doAddPoint(e);return;}
 }
 
 // --- Touch & mouse corner drag ---
@@ -821,7 +810,15 @@ function onDragStart(e){if(!corners)return;
 function onDragMove(e){if(!corners||dragIdx<0)return;
   e.preventDefault();const p=getCanvasPt(canvasOrig,e);corners[dragIdx]=[p.x,p.y];drawOrig();}
 
-function onDragEnd(e){if(dragIdx>=0){canvasOrig.style.touchAction='';dragIdx=-1;fullPipeline(false);}}
+function onDragEnd(e){
+  if(dragIdx>=0){canvasOrig.style.touchAction='';dragIdx=-1;fullPipeline(false);return;}
+  // 添加点模式：手指抬起/鼠标松开时加点
+  if(addPointMode){
+    e=e||window.event;
+    var pt=e.changedTouches?{clientX:e.changedTouches[0].clientX,clientY:e.changedTouches[0].clientY}:e;
+    doAddPoint(pt);
+  }
+}
 
 // touch
 canvasOrig.addEventListener('touchstart',onDragStart,{passive:false});
