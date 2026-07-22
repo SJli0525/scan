@@ -545,12 +545,12 @@ function fullPipeline(redetectCorners=true){
       const src=cv.imread(imgEl);
       if(redetectCorners)corners=detectCorners(src);
       if(corners){
-        try{runDetection(src);}catch(e){/* 检测标记点出错不影响添加点功能 */}
+        try{runDetection(src);}catch(e){}
         setStatus(`四角已标定 (${lastStrategy})，检测到 ${markers.length} 个标记点`,'success');
-        $('btnManual').style.display='none';$('btnAddPoint').disabled=false;
+        $('btnManual').style.display='none';
       }else{
-        markers=[];setStatus('未能自动标定四角，请确保纸张与背景对比明显','error');
-        $('btnManual').style.display='';$('btnAddPoint').disabled=true;
+        markers=[];setStatus('未能自动标定四角','error');
+        $('btnManual').style.display='';
       }
       src.delete();
       drawOrig();
@@ -559,9 +559,12 @@ function fullPipeline(redetectCorners=true){
       drawOrig();drawWarp(null);
       if(corners)setStatus('四角已标定（手动）','success');
     }
+    // 统一启用/禁用按钮
+    btnRerun.disabled=false;
+    $('btnAddPoint').disabled=!corners;
+    $('zoomBar').style.display='none';
     updateResults();
     showLoading(false);
-    // 自动滚动到结果
     if(markers.length||corners){
       setTimeout(()=>{resultCard.scrollIntoView({behavior:'smooth',block:'nearest'});},200);
     }
@@ -838,7 +841,9 @@ $('btnClear').addEventListener('click',()=>{
   imgEl=null;corners=null;markers=[];formulaRows=[];manualMode=false;manualPts=[];addPointMode=false;
   $('btnRerun').disabled=true;$('btnAddPoint').disabled=true;$('btnManual').style.display='none';
   $('btnAddPoint').textContent='➕ 添加标记点';$('btnAddPoint').className='btn btn-secondary';
-  canvasOrig.width=0;canvasWarp.width=0;resultCard.style.display='none';$('formulaRows').innerHTML='';
+  canvasOrig.width=0;canvasOrig.getContext('2d').clearRect(0,0,canvasOrig.width,canvasOrig.height);
+  canvasWarp.width=0;canvasWarp.getContext('2d').clearRect(0,0,canvasWarp.width,canvasWarp.height);
+  $('overlayOrig').classList.remove('show');$('overlayWarp').classList.remove('show');resultCard.style.display='none';$('formulaRows').innerHTML='';
   renderFormulaRows();$('formulaResult').textContent='结果会显示在这里';
   fileInputs.forEach(fi=>fi.value='');
   setStatus('已清除，请选择或拍摄照片');
