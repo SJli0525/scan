@@ -110,10 +110,11 @@ body {
 <script>
 var cvReady = false, cvNoOpencv = false;
 function onOpenCvReady(){
+  cvNoOpencv=false;  // 重置跳过标记
+  cvReady=true;
   var st=document.getElementById('status');
   if(st){st.textContent='OpenCV 已就绪，请选择或拍摄照片';st.className='success';}
   document.querySelectorAll('.fileInput').forEach(function(fi){fi.disabled=false;});
-  cvReady=true;
 }
 setTimeout(function(){
   if(typeof cv==='undefined'||!cvReady){
@@ -544,7 +545,7 @@ function fullPipeline(redetectCorners=true){
       const src=cv.imread(imgEl);
       if(redetectCorners)corners=detectCorners(src);
       if(corners){
-        runDetection(src);
+        try{runDetection(src);}catch(e){/* 检测标记点出错不影响添加点功能 */}
         setStatus(`四角已标定 (${lastStrategy})，检测到 ${markers.length} 个标记点`,'success');
         $('btnManual').style.display='none';$('btnAddPoint').disabled=false;
       }else{
