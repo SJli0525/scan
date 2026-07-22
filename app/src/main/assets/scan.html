@@ -628,25 +628,33 @@ $('btnCsv').addEventListener('click',()=>{
 // --- 历史记录 ---
 function loadHist(){try{return JSON.parse(localStorage.getItem('scanHist')||'[]');}catch(e){return [];}}
 function saveHist(d){localStorage.setItem('scanHist',JSON.stringify(d));}
+function makeThumb(img,maxW){
+  var c=document.createElement('canvas'),w=img.naturalWidth||img.width,h=img.naturalHeight||img.height;
+  if(w>maxW){h=h*maxW/w;w=maxW;}
+  c.width=w;c.height=h;
+  var cx=c.getContext('2d');cx.drawImage(img,0,0,w,h);
+  return c.toDataURL('image/jpeg',0.4);
+}
+
 function renderHist(){
   var list=loadHist(),hc=$('historyCard'),hl=$('historyList');
   if(!list.length){hc.style.display='none';return;}
   hc.style.display='';
   $('histCount').textContent='('+list.length+' 组)';
   hl.innerHTML=list.map(function(r,i){
-    var name=r.name||'组 '+r.time;
+    var name=r.name||'组 '+r.time,img=r.thumb?'<img src="'+r.thumb+'" style="width:100%;border-radius:6px;margin:4px 0">':'';
     return '<div class="marker-item" style="position:relative;margin-bottom:6px">'+
       '<div style="display:flex;justify-content:space-between;align-items:center">'+
-        '<span style="font-size:12px;color:#9ca3af">#'+(i+1)+'</span>'+
+        '<span style="font-size:12px;color:#9ca3af">#'+(i+1)+' '+r.time+'</span>'+
         '<span style="display:flex;gap:4px">'+
           '<button data-rn="'+i+'" style="background:none;border:none;color:#3b82f6;font-size:12px;cursor:pointer">✏️</button>'+
           '<button data-dh="'+i+'" style="background:none;border:none;color:#ef4444;font-size:12px;cursor:pointer">🗑</button>'+
         '</span>'+
       '</div>'+
-      '<div class="num" style="display:flex;gap:6px;align-items:center">'+
+      '<div class="num" style="display:flex;gap:6px;align-items:center;margin:2px 0">'+
         '<input type="text" id="hname'+i+'" value="'+name+'" readonly style="flex:1;border:none;background:none;font-size:13px;font-weight:600;padding:2px 0;outline:none">'+
         '<span style="font-size:12px;color:#6b7280;font-weight:normal">'+r.n+' 点</span>'+
-      '</div>'+
+      '</div>'+img+
       '<span class="detail" style="white-space:pre-wrap;font-size:11px">'+r.data+'</span>'+
     '</div>';
   }).join('');
@@ -663,8 +671,11 @@ function renderHist(){
 function autoSave(){
   if(!markers.length)return;
   var list=loadHist(),t=(new Date()).toLocaleString('zh-CN',{hour12:false});
-  var w=getPaperSize().w,h=getPaperSize().h,r=buildDataRows();
-  list.push({time:t,n:markers.length,paperW:w,paperH:h,data:r,name:'组 '+(list.length+1)});
+  var w=getPaperSize().w,h=getPaperSize().h,r=buildDataRows(),thumb='';
+  if(imgEl)thumb=makeThumb(imgEl,200);
+  list.push({time:t,n:markers.length,paperW:w,paperH:h,data:r,name:'组 '+(list.length+1),thumb:thumb});
+  // 最多保留 30 组，超出删最旧
+  if(list.length>30)list.splice(0,list.length-30);
   saveHist(list);renderHist();
 }
 $('btnSave').addEventListener('click',autoSave);
