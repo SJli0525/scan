@@ -215,6 +215,16 @@ function skipOpenCv(){
   <div class="btn-group" style="margin-top:12px">
     <button class="btn btn-secondary" id="btnCopy" style="flex:1">📋 复制数据</button>
     <button class="btn btn-secondary" id="btnCsv" style="flex:1">💾 下载 CSV</button>
+    <button class="btn btn-secondary" id="btnSave" style="flex:1">💾 保存</button>
+  </div>
+</div>
+
+<div class="card" id="historyCard" style="display:none">
+  <div class="card-title">📜 历史记录 <span id="histCount" style="font-weight:normal;font-size:12px;color:#9ca3af"></span></div>
+  <div id="historyList"></div>
+  <div class="btn-group" style="margin-top:8px">
+    <button class="btn btn-secondary" id="btnExportHistory" style="flex:1;padding:8px">📥 导出全部</button>
+    <button class="btn btn-danger btn-secondary" id="btnClearHistory" style="flex:1;padding:8px">🗑 清空</button>
   </div>
 </div>
 
@@ -614,6 +624,61 @@ $('btnCsv').addEventListener('click',()=>{
   document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
   setStatus('CSV 已开始下载','success');
 });
+
+// --- 历史记录 ---
+function loadHist(){try{return JSON.parse(localStorage.getItem('scanHist')||'[]');}catch(e){return [];}}
+function saveHist(d){localStorage.setItem('scanHist',JSON.stringify(d));}
+function renderHist(){
+  var list=loadHist(),hc=$('historyCard'),hl=$('historyList');
+  if(!list.length){hc.style.display='none';return;}
+  hc.style.display='';
+  $('histCount').textContent='('+list.length+' 组)';
+  hl.innerHTML=list.map(function(r,i){
+    var name=r.name||'组 '+r.time;
+    return '<div class="marker-item" style="position:relative;margin-bottom:6px">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center">'+
+        '<span style="font-size:12px;color:#9ca3af">#'+(i+1)+'</span>'+
+        '<span style="display:flex;gap:4px">'+
+          '<button data-rn="'+i+'" style="background:none;border:none;color:#3b82f6;font-size:12px;cursor:pointer">✏️</button>'+
+          '<button data-dh="'+i+'" style="background:none;border:none;color:#ef4444;font-size:12px;cursor:pointer">🗑</button>'+
+        '</span>'+
+      '</div>'+
+      '<div class="num" style="display:flex;gap:6px;align-items:center">'+
+        '<input type="text" id="hname'+i+'" value="'+name+'" readonly style="flex:1;border:none;background:none;font-size:13px;font-weight:600;padding:2px 0;outline:none">'+
+        '<span style="font-size:12px;color:#6b7280;font-weight:normal">'+r.n+' 点</span>'+
+      '</div>'+
+      '<span class="detail" style="white-space:pre-wrap;font-size:11px">'+r.data+'</span>'+
+    '</div>';
+  }).join('');
+  hl.querySelectorAll('[data-rn]').forEach(function(b){b.addEventListener('click',function(){
+    var idx=+this.dataset.rn,inp=document.getElementById('hname'+idx);
+    if(!inp)return;
+    if(inp.readOnly){inp.readOnly=false;inp.focus();inp.style.border='1px solid #3b82f6';inp.style.borderRadius='4px';inp.style.padding='2px 4px';}
+    else{inp.readOnly=true;inp.style.border='none';inp.style.padding='2px 0';var list=loadHist();list[idx].name=inp.value;saveHist(list);}
+  });});
+  hl.querySelectorAll('[data-dh]').forEach(function(b){b.addEventListener('click',function(){
+    var list=loadHist();list.splice(+this.dataset.dh,1);saveHist(list);renderHist();
+  });});
+}
+function autoSave(){
+  if(!markers.length)return;
+  var list=loadHist(),t=(new Date()).toLocaleString('zh-CN',{hour12:false});
+  var w=getPaperSize().w,h=getPaperSize().h,r=buildDataRows();
+  list.push({time:t,n:markers.length,paperW:w,paperH:h,data:r,name:'组 '+(list.length+1)});
+  saveHist(list);renderHist();
+}
+$('btnSave').addEventListener('click',autoSave);
+$('btnClearHistory').addEventListener('click',function(){saveHist([]);renderHist();setStatus('历史已清空');});
+$('btnExportHistory').addEventListener('click',function(){
+  var list=loadHist();
+  if(!list.length){setStatus('没有历史','error');return;}
+  var txt=list.map(function(r,i){return '#组'+(i+1)+' '+r.time+' | '+r.n+' 点\n'+r.data;}).join('\n\n');
+  var blob=new Blob(['\ufeff'+txt],{type:'text/plain;charset=utf-8'});
+  var u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download='history_'+Date.now()+'.txt';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(u);
+  setStatus('历史已导出','success');
+});
+renderHist();
 
 // --- Ex / Ey 标准差计算 ---
 let formulaRows = [];
