@@ -759,6 +759,7 @@ function doAddPoint(e){
   if(!corners){setStatus('请先标定四角','error');return;}
   if(cvNoOpencv||typeof cv==='undefined'){setStatus('添加点需要 OpenCV','error');return;}
   var p=getCanvasPt(canvasOrig,e);
+  if(p.x<0||p.y<0||p.x>canvasOrig.width||p.y>canvasOrig.height){setStatus('请点击图像内部','error');return;}
   var pp=imageToPaper(p.x,p.y);
   if(!pp)return;
   var w=getPaperSize().w,h=getPaperSize().h;
@@ -788,10 +789,12 @@ function onCanvasTap(e){
 
 // --- Touch & mouse corner drag ---
 function getCanvasPt(canvas,e){
-  const t=e.touches?{clientX:e.touches[0].clientX,clientY:e.touches[0].clientY}:e;
-  const rect=canvas.getBoundingClientRect();
-  const sx=canvas.width/rect.width, sy=canvas.height/rect.height;
-  return{x:(t.clientX-rect.left)*sx, y:(t.clientY-rect.top)*sy};
+  var cx,cy;
+  if(e.touches&&e.touches.length>0){cx=e.touches[0].clientX;cy=e.touches[0].clientY;}
+  else if(e.changedTouches&&e.changedTouches.length>0){cx=e.changedTouches[0].clientX;cy=e.changedTouches[0].clientY;}
+  else{cx=e.clientX;cy=e.clientY;}
+  var rect=canvas.getBoundingClientRect();
+  return{x:(cx-rect.left)*canvas.width/rect.width, y:(cy-rect.top)*canvas.height/rect.height};
 }
 
 function nearestCornerIdx(x,y){
@@ -812,8 +815,8 @@ function onDragMove(e){if(!corners||dragIdx<0)return;
 
 function onDragEnd(e){
   if(dragIdx>=0){canvasOrig.style.touchAction='';dragIdx=-1;fullPipeline(false);return;}
-  // 添加点模式：手指抬起/鼠标松开时加点
-  if(addPointMode){
+  // 添加点模式：单指抬起时加点（双指缩放结束时跳过）
+  if(addPointMode&&(!e.changedTouches||e.changedTouches.length===1)){
     e=e||window.event;
     var pt=e.changedTouches?{clientX:e.changedTouches[0].clientX,clientY:e.changedTouches[0].clientY}:e;
     doAddPoint(pt);
