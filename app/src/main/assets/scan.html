@@ -775,8 +775,9 @@ function onCanvasTap(e){
   }
 
   // 手动添加标记点模式
-  if(addPointMode&&corners){
-    if(cvNoOpencv||typeof cv==='undefined'){setStatus('添加点需要 OpenCV，请先联网加载或使用"从检测点导入"','error');return;}
+  if(addPointMode){
+    if(!corners){setStatus('请先标定四角（自动识别或点"✋ 手动标定四角"）','error');return;}
+    if(cvNoOpencv||typeof cv==='undefined'){setStatus('添加点需要 OpenCV，请等待加载或重新打开','error');return;}
     const p=getCanvasPt(canvasOrig,e);
     const pp=imageToPaper(p.x,p.y);
     if(!pp)return;
