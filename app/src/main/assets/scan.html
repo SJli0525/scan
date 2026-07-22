@@ -11,8 +11,14 @@ body {
   margin: 0; padding: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
   background: #f3f4f6; color: #1f2937; font-size: 15px; line-height: 1.5;
 }
-.card { background: #fff; border-radius: 14px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-.card-title { font-size: 13px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+.card {
+  background: #fff; border-radius: 14px; padding: 16px; margin-bottom: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08); transition: opacity 0.3s;
+}
+.card-title {
+  font-size: 13px; font-weight: 600; color: #6b7280; text-transform: uppercase;
+  letter-spacing: 0.5px; margin-bottom: 10px;
+}
 .row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; flex-wrap: wrap; }
 .row label { font-size: 14px; color: #374151; min-width: 60px; }
 .row input[type=number] {
@@ -30,6 +36,7 @@ body {
 .btn-primary:disabled { background: #93c5fd; cursor: default; transform: none; }
 .btn-secondary { background: #e5e7eb; color: #374151; }
 .btn-secondary:disabled { opacity: 0.5; cursor: default; transform: none; }
+.btn-danger { background: #ef4444; color: #fff; }
 .btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn-upload {
   position: relative; overflow: hidden; background: #3b82f6; color: #fff; padding: 12px 24px;
@@ -39,16 +46,29 @@ body {
 .btn-upload-secondary { background: #6b7280; }
 #status {
   padding: 10px 14px; border-radius: 10px; font-size: 14px; margin-bottom: 10px;
-  background: #eff6ff; color: #1d4ed8; text-align: center;
+  background: #eff6ff; color: #1d4ed8; text-align: center; transition: all 0.3s;
 }
 #status.success { background: #f0fdf4; color: #15803d; }
 #status.warn { background: #fefce8; color: #a16207; }
 #status.error { background: #fef2f2; color: #b91c1c; }
+#status.processing { background: #eef2ff; color: #4338ca; }
 .canvas-wrap {
   position: relative; border-radius: 10px; overflow: hidden; background: #e5e7eb;
   margin-bottom: 8px;
 }
 .canvas-wrap canvas { display: block; width: 100%; height: auto; }
+.canvas-wrap .loading-overlay {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,0.6); color: #6b7280; font-size: 14px; gap: 8px;
+  opacity: 0; transition: opacity 0.3s; pointer-events: none;
+}
+.canvas-wrap .loading-overlay.show { opacity: 1; }
+.spinner {
+  width: 20px; height: 20px; border: 2.5px solid #d1d5db;
+  border-top-color: #3b82f6; border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 .canvas-label {
   font-size: 12px; color: #6b7280; text-align: center; padding: 4px; background: #f9fafb;
   border-radius: 0 0 10px 10px; margin-bottom: 4px;
@@ -63,7 +83,9 @@ body {
 .marker-item {
   background: #f9fafb; padding: 8px 10px; border-radius: 8px; font-size: 13px;
   display: flex; flex-direction: column; gap: 2px;
+  animation: fadeIn 0.25s ease;
 }
+@keyframes fadeIn { from { opacity:0;transform:translateY(4px) } to { opacity:1;transform:translateY(0) } }
 .marker-item .num { font-weight: 600; color: #3b82f6; font-size: 14px; }
 .marker-item .detail { color: #6b7280; font-size: 12px; }
 #summary { font-size: 14px; color: #374151; text-align: center; padding: 8px; }
@@ -72,10 +94,9 @@ body {
 }
 .param-item { display: flex; flex-direction: column; gap: 2px; }
 .param-item label { font-size: 12px; color: #6b7280; }
-.param-item input { width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 15px; background: #f9fafb; outline: none; }
+.param-item input { width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 15px; background: #f9fafb; outline: none; transition: border-color 0.15s; }
 .param-item input:focus { border-color: #3b82f6; background: #fff; }
 
-/* mobile table fallback */
 @media (max-width: 480px) {
   body { padding: 8px; }
   .card { padding: 12px; border-radius: 10px; }
@@ -135,17 +156,25 @@ body {
 
 <div class="btn-group" style="margin-bottom:12px">
   <button class="btn btn-secondary" id="btnRerun" disabled>🔄 重新识别</button>
+  <button class="btn btn-secondary" id="btnAddPoint" disabled>➕ 添加标记点</button>
+  <button class="btn btn-secondary" id="btnManual" style="display:none">✋ 手动标定四角</button>
 </div>
 
 <div class="card">
   <div class="card-title">原图</div>
-  <div class="canvas-wrap"><canvas id="canvasOrig"></canvas></div>
+  <div class="canvas-wrap">
+    <canvas id="canvasOrig"></canvas>
+    <div class="loading-overlay" id="overlayOrig"><div class="spinner"></div>处理中…</div>
+  </div>
   <div class="canvas-label">绿=纸张四角（可拖拽）&nbsp; 红=标记点&nbsp; 蓝=纸心</div>
 </div>
 
 <div class="card">
   <div class="card-title">矫正俯视图</div>
-  <div class="canvas-wrap"><canvas id="canvasWarp"></canvas></div>
+  <div class="canvas-wrap">
+    <canvas id="canvasWarp"></canvas>
+    <div class="loading-overlay" id="overlayWarp"><div class="spinner"></div>处理中…</div>
+  </div>
 </div>
 
 <div class="card" id="resultCard" style="display:none">
@@ -179,7 +208,10 @@ body {
   <div class="hint" style="margin-top:6px;font-size:12px">公式：Ex = √[Σ(Xᵢ−X̄)²/(n−1)]·K，Ey 同理</div>
 </div>
 
-<div class="hint">上传后自动标定纸张四角、检测标记点。若四角不准，可手指在图上拖拽绿色角点手动修正。结果可复制到 Excel 或下载 CSV 文件</div>
+<div class="hint">自动识别 → 拖拽/手动修正 → 复制/导出数据。按"清除全部"可重新拍照</div>
+<div style="display:flex;justify-content:center;margin:4px 0 8px">
+  <button class="btn btn-danger btn-secondary" id="btnClear" style="font-size:13px;padding:6px 16px">🗑 清除全部</button>
+</div>
 
 <script async src="opencv.js" onload="onOpenCvReady()"></script>
 <script>
@@ -468,15 +500,35 @@ function updateResults(){
     </div>`).join('');
 }
 
+function showLoading(show){$('overlayOrig').classList.toggle('show',show);$('overlayWarp').classList.toggle('show',show);}
+
 function fullPipeline(redetectCorners=true){
   if(!imgEl||!cvReady)return;
-  const src=cv.imread(imgEl);
-  if(redetectCorners)corners=detectCorners(src);
-  if(corners){runDetection(src);setStatus(`四角已标定 (${lastStrategy})，检测到 ${markers.length} 个标记点`,'success');}
-  else{markers=[];setStatus('未能自动标定四角，请确保纸张与背景对比明显','error');}
-  src.delete();btnRerun.disabled=false;drawOrig();
-  if(corners){const src2=cv.imread(imgEl);drawWarp(src2);src2.delete();}else drawWarp(null);
-  updateResults();
+  if(redetectCorners&&addPointMode){addPointMode=false;$('btnAddPoint').textContent='➕ 添加标记点';$('btnAddPoint').className='btn btn-secondary';}
+  if(redetectCorners)setStatus('识别中…','processing');
+  showLoading(true);
+  setTimeout(()=>{
+    const src=cv.imread(imgEl);
+    if(redetectCorners)corners=detectCorners(src);
+    if(corners){
+      runDetection(src);
+      setStatus(`四角已标定 (${lastStrategy})，检测到 ${markers.length} 个标记点`,'success');
+      $('btnManual').style.display='none';
+      $('btnAddPoint').disabled=false;
+    }else{
+      markers=[];setStatus('未能自动标定四角，请确保纸张与背景对比明显','error');
+      $('btnManual').style.display='';
+      $('btnAddPoint').disabled=true;
+    }
+    src.delete();btnRerun.disabled=false;drawOrig();
+    if(corners){const src2=cv.imread(imgEl);drawWarp(src2);src2.delete();}else drawWarp(null);
+    updateResults();
+    showLoading(false);
+    // 自动滚动到结果
+    if(markers.length||corners){
+      setTimeout(()=>{resultCard.scrollIntoView({behavior:'smooth',block:'nearest'});},200);
+    }
+  },50);
 }
 
 // --- Event listeners ---
@@ -599,6 +651,90 @@ document.querySelectorAll('.paper-type').forEach(btn=>btn.addEventListener('clic
   if(imgEl)fullPipeline(true);
 }));
 
+// --- 手动标定四角 ---
+let manualMode = false;
+let manualPts = [];
+
+function enterManualMode(){
+  if(!imgEl||!cvReady)return;
+  manualMode = true; manualPts = [];
+  $('btnManual').style.display = 'none';
+  setStatus('请依次在图上点出纸张的 4 个角：❶左上 → ❷右上 → ❸右下 → ❹左下', 'warn');
+}
+$('btnManual').addEventListener('click', enterManualMode);
+
+// --- 手动添加标记点 ---
+let addPointMode = false;
+
+function imageToPaper(imgX, imgY){
+  if(!corners)return null;
+  // 从 warpPaper 获取透视变换矩阵 M: image → warped
+  const src=cv.imread(imgEl);
+  const{warped,M,warpW,warpH}=warpPaper(src,corners);
+  const pt=cv.matFromArray(1,1,cv.CV_32FC2,[imgX,imgY]);
+  const out=new cv.Mat();
+  cv.perspectiveTransform(pt,out,M);
+  const{w:paperW,h:paperH}=getPaperSize();
+  const paperX=out.data32F[0]/warpW*paperW;
+  const paperY=out.data32F[1]/warpH*paperH;
+  src.delete();warped.delete();M.delete();pt.delete();out.delete();
+  return{paperX,paperY};
+}
+
+$('btnAddPoint').addEventListener('click',()=>{
+  addPointMode=!addPointMode;
+  if(addPointMode){
+    setStatus('请在图上点击要添加标记点的位置','warn');
+    $('btnAddPoint').textContent='✅ 完成添加';
+    $('btnAddPoint').className='btn btn-primary';
+  }else{
+    setStatus(`手动添加完成 (共 ${markers.length} 个点)`,'success');
+    $('btnAddPoint').textContent='➕ 添加标记点';
+    $('btnAddPoint').className='btn btn-secondary';
+  }
+});
+
+function onCanvasTap(e){
+  if(!imgEl||!cvReady)return;
+  e.preventDefault();
+  const p=getCanvasPt(canvasOrig,e);
+
+  // 手动标定四角模式
+  if(manualMode){
+    manualPts.push([p.x, p.y]);
+    drawOrig();
+    const r=Math.max(8,canvasOrig.width/100);
+    ctxOrig.fillStyle='#22c55e';
+    ctxOrig.beginPath();ctxOrig.arc(p.x,p.y,r+4,0,Math.PI*2);ctxOrig.fill();
+    ctxOrig.fillStyle='#fff';
+    ctxOrig.font=`bold ${Math.max(12,r)}px sans-serif`;
+    ctxOrig.textAlign='center';ctxOrig.textBaseline='middle';
+    ctxOrig.fillText(String(manualPts.length),p.x,p.y);
+    if(manualPts.length>=4){
+      corners=orderCorners(manualPts);
+      manualMode=false;manualPts=[];
+      fullPipeline(false);
+    }
+    return;
+  }
+
+  // 手动添加标记点模式
+  if(addPointMode&&corners){
+    const p=getCanvasPt(canvasOrig,e);
+    const pp=imageToPaper(p.x,p.y);
+    if(!pp)return;
+    const{w,h}=getPaperSize();
+    markers.push({
+      imgX:p.x,imgY:p.y,paperX:pp.paperX,paperY:pp.paperY,
+      area:0,dist:Math.hypot(pp.paperX-w/2,pp.paperY-h/2)
+    });
+    drawOrig();
+    const s=cv.imread(imgEl);drawWarp(s);s.delete();
+    updateResults();
+    setStatus(`已添加点 ${markers.length}，继续点击或点"✅ 完成添加"结束`,'warn');
+  }
+}
+
 // --- Touch & mouse corner drag ---
 function getCanvasPt(canvas,e){
   const t=e.touches?{clientX:e.touches[0].clientX,clientY:e.touches[0].clientY}:e;
@@ -634,6 +770,20 @@ canvasOrig.addEventListener('touchcancel',onDragEnd);
 canvasOrig.addEventListener('mousedown',onDragStart);
 window.addEventListener('mousemove',e=>{if(dragIdx>=0)onDragMove(e);});
 window.addEventListener('mouseup',onDragEnd);
+
+// 手动标定：点击画布添加角点
+canvasOrig.addEventListener('click',onCanvasTap);
+
+// 清除全部
+$('btnClear').addEventListener('click',()=>{
+  imgEl=null;corners=null;markers=[];formulaRows=[];manualMode=false;manualPts=[];addPointMode=false;
+  $('btnRerun').disabled=true;$('btnAddPoint').disabled=true;$('btnManual').style.display='none';
+  $('btnAddPoint').textContent='➕ 添加标记点';$('btnAddPoint').className='btn btn-secondary';
+  canvasOrig.width=0;canvasWarp.width=0;resultCard.style.display='none';$('formulaRows').innerHTML='';
+  renderFormulaRows();$('formulaResult').textContent='结果会显示在这里';
+  fileInputs.forEach(fi=>fi.value='');
+  setStatus('已清除，请选择或拍摄照片');
+});
 
 function onOpenCvReady(){cvReady=true;setStatus('OpenCV 已就绪，请选择或拍摄照片');fileInputs.forEach(fi=>fi.disabled=false);}
 </script>
