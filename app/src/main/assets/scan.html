@@ -191,6 +191,12 @@ function skipOpenCv(){
     <div class="loading-overlay" id="overlayOrig"><div class="spinner"></div>处理中…</div>
   </div>
   <div class="canvas-label">绿=纸张四角（可拖拽）&nbsp; 红=标记点&nbsp; 蓝=纸心</div>
+  <div id="zoomBar" style="display:none;align-items:center;justify-content:center;gap:6px;padding:2px 0">
+    <button class="zoom-btn" id="zoomOut" style="width:34px;height:34px;border-radius:50%;border:1px solid #d1d5db;background:#fff;font-size:18px">−</button>
+    <span id="zoomLevel" style="font-size:13px;color:#6b7280;min-width:36px;text-align:center">1×</span>
+    <button class="zoom-btn" id="zoomIn" style="width:34px;height:34px;border-radius:50%;border:1px solid #d1d5db;background:#fff;font-size:18px">+</button>
+    <button id="zoomReset" style="padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;background:#fff;font-size:12px;cursor:pointer">1:1</button>
+  </div>
 </div>
 
 <div class="card">
@@ -217,8 +223,11 @@ function skipOpenCv(){
     <label>K 系数</label>
     <input type="number" id="formulaK" value="0.615" step="any">
   </div>
-  <div class="row" style="margin-top:6px;font-size:12px;color:#6b7280;justify-content:space-between">
-    <span>X (mm)</span><span>Y (mm)</span><span style="width:24px"></span>
+  <div style="display:flex;gap:4px;margin-top:6px;font-size:12px;color:#6b7280;padding:0 2px">
+    <span style="width:16px;text-align:center">#</span>
+    <span style="flex:1;text-align:center">X (mm)</span>
+    <span style="flex:1;text-align:center">Y (mm)</span>
+    <span style="width:30px"></span>
   </div>
   <div id="formulaRows"></div>
   <div class="btn-group" style="margin-top:8px">
@@ -543,6 +552,7 @@ function fullPipeline(redetectCorners=true){
         $('btnManual').style.display='';$('btnAddPoint').disabled=true;
       }
       src.delete();
+      drawOrig();
       if(corners){const src2=cv.imread(imgEl);drawWarp(src2);src2.delete();}else drawWarp(null);
     }else{
       drawOrig();drawWarp(null);
@@ -611,10 +621,11 @@ function renderFormulaRows(){
     return;
   }
   c.innerHTML = formulaRows.map((r,i)=>`
-    <div class="param-grid" style="grid-template-columns:1fr 1fr 28px;gap:4px;margin-top:4px">
-      <input type="number" step="any" data-idx="${i}" data-field="X" value="${r.X||''}" placeholder="X" style="padding:6px;font-size:14px">
-      <input type="number" step="any" data-idx="${i}" data-field="Y" value="${r.Y||''}" placeholder="Y" style="padding:6px;font-size:14px">
-      <button data-idx="${i}" data-action="del" style="background:#ef4444;color:#fff;border:none;border-radius:6px;font-size:14px;padding:0">×</button>
+    <div style="display:flex;gap:4px;margin-top:4px;align-items:center">
+      <span style="font-size:12px;color:#9ca3af;min-width:16px;text-align:center">${i+1}</span>
+      <input type="number" step="any" data-idx="${i}" data-field="X" value="${r.X||''}" placeholder="X" style="flex:1;min-width:0;padding:4px 6px;font-size:13px;border:1px solid #d1d5db;border-radius:6px;background:#fff;outline:none">
+      <input type="number" step="any" data-idx="${i}" data-field="Y" value="${r.Y||''}" placeholder="Y" style="flex:1;min-width:0;padding:4px 6px;font-size:13px;border:1px solid #d1d5db;border-radius:6px;background:#fff;outline:none">
+      <button data-idx="${i}" data-action="del" style="flex-shrink:0;width:30px;height:30px;background:#ef4444;color:#fff;border:none;border-radius:6px;font-size:16px;display:flex;align-items:center;justify-content:center">×</button>
     </div>`).join('');
   c.querySelectorAll('input').forEach(inp=>inp.addEventListener('change',e=>{
     const i = +e.target.dataset.idx, f = e.target.dataset.field;
@@ -691,6 +702,20 @@ $('btnManual').addEventListener('click', enterManualMode);
 
 // --- 手动添加标记点 ---
 let addPointMode = false;
+let zoomScale = 1, zoomX = 0, zoomY = 0, panStart = null;
+
+function applyZoom(){
+  var w=$('canvasOrigWrap');
+  w.style.transform='scale('+zoomScale+') translate('+zoomX+'px,'+zoomY+'px)';
+  w.style.transformOrigin='0 0';
+  $('zoomLevel').textContent=zoomScale.toFixed(1)+'×';
+}
+function zoomIn(){if(zoomScale<5){zoomScale*=1.5;applyZoom();}}
+function zoomOut(){if(zoomScale>1){zoomScale/=1.5;applyZoom();}}
+function zoomReset(){zoomScale=1;zoomX=0;zoomY=0;applyZoom();$('zoomBar').style.display='none';}
+$('zoomIn').addEventListener('click',zoomIn);
+$('zoomOut').addEventListener('click',zoomOut);
+$('zoomReset').addEventListener('click',zoomReset);
 
 function imageToPaper(imgX, imgY){
   if(!corners)return null;
@@ -710,13 +735,17 @@ function imageToPaper(imgX, imgY){
 $('btnAddPoint').addEventListener('click',()=>{
   addPointMode=!addPointMode;
   if(addPointMode){
-    setStatus('请在图上点击要添加标记点的位置','warn');
+    zoomReset();
+    setStatus('请在图上点击要添加标记点的位置，可用 +/- 缩放','warn');
     $('btnAddPoint').textContent='✅ 完成添加';
     $('btnAddPoint').className='btn btn-primary';
+    $('zoomBar').style.display='flex';
   }else{
+    zoomReset();
     setStatus(`手动添加完成 (共 ${markers.length} 个点)`,'success');
     $('btnAddPoint').textContent='➕ 添加标记点';
     $('btnAddPoint').className='btn btn-secondary';
+    $('zoomBar').style.display='none';
   }
 });
 
