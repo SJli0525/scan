@@ -733,6 +733,7 @@ function imageToPaper(imgX, imgY){
 }
 
 $('btnAddPoint').addEventListener('click',()=>{
+  if(cvNoOpencv||typeof cv==='undefined'){setStatus('添加点需要 OpenCV，请等待 OpenCV 加载完成','error');return;}
   addPointMode=!addPointMode;
   if(addPointMode){
     zoomReset();
@@ -775,6 +776,7 @@ function onCanvasTap(e){
 
   // 手动添加标记点模式
   if(addPointMode&&corners){
+    if(cvNoOpencv||typeof cv==='undefined'){setStatus('添加点需要 OpenCV，请先联网加载或使用"从检测点导入"','error');return;}
     const p=getCanvasPt(canvasOrig,e);
     const pp=imageToPaper(p.x,p.y);
     if(!pp)return;
