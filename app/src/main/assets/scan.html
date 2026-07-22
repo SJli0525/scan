@@ -591,9 +591,19 @@ btnRerun.addEventListener('click',()=>fullPipeline(true));
 function buildDataRows(){
   const{w,h}=getPaperSize();const cx=w/2,cy=h/2;
   return ['点号\tX(mm)\tY(mm)\tex(mm)\tey(mm)\t距中心(mm)\t面积(mm²)',
-    ...markers.map((m,i)=>`${i+1}\t${m.paperX.toFixed(3)}\t${m.paperY.toFixed(3)}\t${(m.paperX-cx).toFixed(3)}\t${(m.paperY-cy).toFixed(3)}\t${m.dist.toFixed(3)}\t${m.area.toFixed(3)}`),
-    `# 纸心: (${cx.toFixed(3)}, ${cy.toFixed(3)}) mm  共 ${markers.length} 个点`
+    ...markers.map((m,i)=>{
+      var ex=m.paperX-cx,ey=m.paperY-cy;
+      return i+1+'\t'+m.paperX.toFixed(3)+'\t'+m.paperY.toFixed(3)+'\t'+ex.toFixed(3)+'\t'+ey.toFixed(3)+'\t'+m.dist.toFixed(3)+'\t'+m.area.toFixed(3);
+    }),
+    '# 纸心: ('+cx.toFixed(3)+', '+cy.toFixed(3)+') mm  共 '+markers.length+' 个点'
   ].join('\n');
+}
+
+function buildExEySummary(){
+  var xs=[],ys=[];
+  const{w,h}=getPaperSize();const cx=w/2,cy=h/2;
+  markers.forEach(function(m){xs.push(m.paperX-cx);ys.push(m.paperY-cy);});
+  return 'ex: '+xs.map(function(v){return v.toFixed(3);}).join(', ')+'\ney: '+ys.map(function(v){return v.toFixed(3);}).join(', ');
 }
 
 function buildCsv(){
@@ -653,8 +663,9 @@ function renderHist(){
       '</div>'+
       '<div class="num" style="display:flex;gap:6px;align-items:center;margin:2px 0">'+
         '<input type="text" id="hname'+i+'" value="'+name+'" readonly style="flex:1;border:none;background:none;font-size:13px;font-weight:600;padding:2px 0;outline:none">'+
-        '<span style="font-size:12px;color:#6b7280;font-weight:normal">'+r.n+' 点</span>'+
+        '<span style="font-size:12px;color:#6b7280;font-weight:normal">'+r.n+' 点 | 纸 '+r.paperW+'×'+r.paperH+'</span>'+
       '</div>'+img+
+      '<div style="font-size:12px;color:#374151;background:#f0fdf4;padding:6px 8px;border-radius:6px;margin:4px 0;white-space:pre-wrap;font-family:monospace">'+(r.summary||'')+'</div>'+
       '<span class="detail" style="white-space:pre-wrap;font-size:11px">'+r.data+'</span>'+
     '</div>';
   }).join('');
@@ -671,9 +682,9 @@ function renderHist(){
 function autoSave(){
   if(!markers.length)return;
   var list=loadHist(),t=(new Date()).toLocaleString('zh-CN',{hour12:false});
-  var w=getPaperSize().w,h=getPaperSize().h,r=buildDataRows(),thumb='';
+  var w=getPaperSize().w,h=getPaperSize().h,r=buildDataRows(),s=buildExEySummary(),thumb='';
   if(imgEl)thumb=makeThumb(imgEl,200);
-  list.push({time:t,n:markers.length,paperW:w,paperH:h,data:r,name:'组 '+(list.length+1),thumb:thumb});
+  list.push({time:t,n:markers.length,paperW:w,paperH:h,data:r,summary:s,name:'组 '+(list.length+1),thumb:thumb});
   // 最多保留 30 组，超出删最旧
   if(list.length>30)list.splice(0,list.length-30);
   saveHist(list);renderHist();
@@ -893,7 +904,12 @@ function onDragEnd(e){
   if(dragIdx>=0){canvasOrig.style.touchAction='';dragIdx=-1;fullPipeline(false);}
 }
 
-// touch
+// 双指缩放（仅在添加点模式下）
+var pinching=0;
+canvasOrig.addEventListener('touchstart',function(e){if(addPointMode&&e.touches.length===2){var dx=e.touches[0].clientX-e.touches[1].clientX,dy=e.touches[0].clientY-e.touches[1].clientY;pinching=Math.hypot(dx,dy);e.preventDefault();}},{passive:false});
+canvasOrig.addEventListener('touchmove',function(e){if(addPointMode&&pinching&&e.touches.length===2){e.preventDefault();var dx=e.touches[0].clientX-e.touches[1].clientX,dy=e.touches[0].clientY-e.touches[1].clientY;var d=Math.hypot(dx,dy);var s=d/pinching;zoomScale=Math.max(1,Math.min(5,zoomScale*s));applyZoom();pinching=d;}},{passive:false});
+canvasOrig.addEventListener('touchend',function(e){if(addPointMode)pinching=0;},{passive:true});
+// 角点拖拽
 canvasOrig.addEventListener('touchstart',onDragStart,{passive:false});
 canvasOrig.addEventListener('touchmove',onDragMove,{passive:false});
 canvasOrig.addEventListener('touchend',onDragEnd);
