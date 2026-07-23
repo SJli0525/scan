@@ -962,7 +962,10 @@ function onCanvasTap(e){
     if(manualPts.length>=4){corners=orderCorners(manualPts);manualMode=false;manualPts=[];fullPipeline(false);}
     return;
   }
-  if(addPointMode){doAddPoint(e);return;}
+  if(addPointMode){
+    if(Date.now()-lastTapTime<100)return; // touchend 刚加过点，跳过 click 避免重复
+    doAddPoint(e);return;
+  }
 }
 
 // --- Touch & mouse corner drag ---
@@ -991,8 +994,16 @@ function onDragStart(e){if(!corners||addPointMode)return;
 function onDragMove(e){if(!corners||dragIdx<0)return;
   e.preventDefault();const p=getCanvasPt(canvasOrig,e);corners[dragIdx]=[p.x,p.y];drawOrig();}
 
+var lastTapTime=0;
 function onDragEnd(e){
-  if(dragIdx>=0){document.body.style.overflow='';canvasOrig.style.touchAction='';dragIdx=-1;fullPipeline(false);}
+  if(dragIdx>=0){document.body.style.overflow='';canvasOrig.style.touchAction='';dragIdx=-1;fullPipeline(false);return;}
+  // 添加点模式：手指抬起/鼠标松开时加点（touchcancel 跳过）
+  if(addPointMode&&imgEl&&cvReady&&e.type!=='touchcancel'){
+    if(e.button!==undefined&&e.button!==0)return;
+    var pt=e.changedTouches?{clientX:e.changedTouches[0].clientX,clientY:e.changedTouches[0].clientY}:e;
+    doAddPoint(pt);
+    lastTapTime=Date.now();
+  }
 }
 
 // 双指缩放（仅在添加点模式下）
