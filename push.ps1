@@ -1,12 +1,21 @@
 # Push the Android project to GitHub.
-# Before running, set your token: $env:GITHUB_TOKEN = "ghp_..."
+# You can either:
+#   1) Set env var: $env:GITHUB_TOKEN = "ghp_..."
+#   2) Run this script directly and paste the token when prompted (input is masked)
 Set-Location -Path $PSScriptRoot
 Write-Host "===== push start $(Get-Date) ====="
 
-if (-not $env:GITHUB_TOKEN) {
-    Write-Host "ERROR: GITHUB_TOKEN environment variable is not set." -ForegroundColor Red
-    Write-Host "Set it with: `$env:GITHUB_TOKEN = 'ghp_...'" -ForegroundColor Yellow
-    exit 1
+$token = $env:GITHUB_TOKEN
+if (-not $token) {
+    Write-Host "GITHUB_TOKEN environment variable not set." -ForegroundColor Yellow
+    $secureToken = Read-Host "Please paste your GitHub token (ghp_...)" -AsSecureString
+    $token = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
+    )
+    if (-not $token) {
+        Write-Host "ERROR: No token provided." -ForegroundColor Red
+        exit 1
+    }
 }
 
 git add .
@@ -17,7 +26,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "no changes to commit"
 }
 
-git push "https://SJli0525:$env:GITHUB_TOKEN@github.com/SJli0525/scan.git" master:main
+git push "https://SJli0525:$token@github.com/SJli0525/scan.git" master:main
 Write-Host "exit_code=$LASTEXITCODE"
 Write-Host "===== push done ====="
 Read-Host "Press Enter to exit"
