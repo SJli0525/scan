@@ -172,11 +172,11 @@ function skipOpenCv(){
   <div class="param-grid" style="margin-top:8px">
     <div class="param-item">
       <label>点面积下限 %</label>
-      <input type="number" id="minAreaPct" value="0.05" min="0.001" step="0.01">
+      <input type="number" id="minAreaPct" value="0.001" min="0.0001" step="0.001">
     </div>
     <div class="param-item">
       <label>点面积上限 %</label>
-      <input type="number" id="maxAreaPct" value="3" min="0.01" step="0.1">
+      <input type="number" id="maxAreaPct" value="0.5" min="0.01" step="0.1">
     </div>
   </div>
 </div>
@@ -426,8 +426,13 @@ function detectFromColorMask(src,eps,paperType){
     lo=[0,0,130,0]; hi=[179,90,255,255];
   }
   const lower=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),lo); const upper=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),hi);
-  cv.inRange(hsv,lower,upper,paperMask); const kernel=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(7,7));
+  cv.inRange(hsv,lower,upper,paperMask);
+  // 大 kernel CLOSE 填平弹孔/撕裂/噪点，还原完整矩形
+  const kernel=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(15,15));
   cv.morphologyEx(paperMask,closed,cv.MORPH_CLOSE,kernel);
+  // 再 CLOSE 一次确保边界闭合
+  const kernel2=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(9,9));
+  cv.morphologyEx(closed,closed,cv.MORPH_CLOSE,kernel2);
   cv.findContours(closed,contours,new cv.Mat(),cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
   let cands=collectQuadsFromContours(contours,imgArea,eps,0.08,'color_mask_'+paperType);
   if(!cands.length){let maxCnt=null,maxArea=0;for(let i=0;i<contours.size();i++){const cnt=contours.get(i);const area=cv.contourArea(cnt);if(area>maxArea){maxArea=area;maxCnt=cnt;}}if(maxCnt&&maxArea>imgArea*0.08){const rect=cv.minAreaRect(maxCnt);cands=[{quad:orderCorners(cv.RotatedRect.points(rect).map(p=>[p.x,p.y])),score:0,areaPct:maxArea/imgArea}];}}
@@ -470,18 +475,69 @@ function warpPaper(src,c){
 }
 
 function detectMarkers(warped,warpW,warpH){
-  const{minArea,maxArea}=getAreaThresholds();const{w:paperW,h:paperH}=getPaperSize();const scaleX=paperW/warpW,scaleY=paperH/warpH;const margin=0.04;const found=[];
-  const gray=new cv.Mat(),blurred=new cv.Mat(); cv.cvtColor(warped,gray,cv.COLOR_RGBA2GRAY); cv.GaussianBlur(gray,blurred,new cv.Size(5,5),0);
-  for(const mode of['dark','bright']){const binary=new cv.Mat();cv.threshold(blurred,binary,0,255,mode==='dark'?cv.THRESH_BINARY_INV+cv.THRESH_OTSU:cv.THRESH_BINARY+cv.THRESH_OTSU);
-    const contours=new cv.MatVector();cv.findContours(binary,contours,new cv.Mat(),cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
-    for(let i=0;i<contours.size();i++){const cnt=contours.get(i);const paperArea=cv.contourArea(cnt)*scaleX*scaleY;
-      if(paperArea<minArea||paperArea>maxArea)continue;const Mo=cv.moments(cnt);if(Mo.m00===0)continue;const cx=Mo.m10/Mo.m00,cy=Mo.m01/Mo.m00;
-      if(cx<warpW*margin||cx>warpW*(1-margin)||cy<warpH*margin||cy>warpH*(1-margin))continue;
-      found.push({warpX:cx,warpY:cy,paperX:cx*scaleX,paperY:cy*scaleY,area:paperArea});}
-    binary.delete();contours.delete();}
+  const{w:paperW,h:paperH}=getPaperSize();
+  const scaleX=paperW/warpW, scaleY=paperH/warpH;
+  const found=[];
+
+  // 1. 灰度+模糊
+  const gray=new cv.Mat(), blurred=new cv.Mat();
+  cv.cvtColor(warped,gray,cv.COLOR_RGBA2GRAY);
+  cv.GaussianBlur(gray,blurred,new cv.Size(3,3),0);
+
+  // 2. 反向二值化：孔洞（暗）变白点
+  const binary=new cv.Mat();
+  cv.threshold(blurred,binary,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU);
+
+  // 3. 形态学开运算：去小噪点
+  const kOpen=cv.getStructuringElement(cv.MORPH_ELLIPSE,new cv.Size(3,3));
+  cv.morphologyEx(binary,binary,cv.MORPH_OPEN,kOpen);
+
+  // 4. 方案A：轮廓法 + 圆形度筛选
+  const contours=new cv.MatVector();
+  cv.findContours(binary,contours,new cv.Mat(),cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
+  for(let i=0;i<contours.size();i++){
+    const cnt=contours.get(i);
+    const areaPx=cv.contourArea(cnt);
+    const peri=cv.arcLength(cnt,true);
+    if(areaPx<3||peri<5)continue;  // 太小跳过
+    // 圆形度 = 4π·A / P²，接近 1 表示圆
+    const circularity=4*Math.PI*areaPx/(peri*peri);
+    if(circularity<0.5)continue;  // 太不圆跳过
+    // 像素面积换算到纸面 mm²
+    const paperArea=areaPx*scaleX*scaleY;
+    // 弹孔一般很小，限制 0.001%~0.5%
+    if(paperArea<0.001*paperW*paperH/100)continue;
+    if(paperArea>2*paperW*paperH/100)continue;
+    const Mo=cv.moments(cnt);
+    if(Mo.m00===0)continue;
+    const cx=Mo.m10/Mo.m00, cy=Mo.m01/Mo.m00;
+    found.push({warpX:cx,warpY:cy,paperX:cx*scaleX,paperY:cy*scaleY,area:paperArea,r:Math.sqrt(areaPx/Math.PI)*scaleX,circ:circularity});
+  }
+  binary.delete();contours.delete();
+
+  // 5. 方案B：霍夫圆检测（备用，找标准圆孔）
+  const circles=new cv.Mat();
+  cv.HoughCircles(blurred,circles,cv.HOUGH_GRADIENT,1,8,
+    undefined,30,3,12);  // minRadius=3px, maxRadius=12px
+  for(let i=0;i<circles.cols();i++){
+    const cx=circles.data32F[i*3];
+    const cy=circles.data32F[i*3+1];
+    const rPx=circles.data32F[i*3+2];
+    const paperArea=Math.PI*rPx*rPx*scaleX*scaleY;
+    const wpX=cx*scaleX, wpY=cy*scaleY;
+    // 去重：和已有标记距离太近跳过
+    if(found.some(m=>Math.hypot(m.paperX-wpX,m.paperY-wpY)<Math.min(paperW,paperH)*0.03))continue;
+    found.push({warpX:cx,warpY:cy,paperX:wpX,paperY:wpY,area:paperArea,r:rPx*scaleX,circ:1});
+  }
+  circles.delete();
   gray.delete();blurred.delete();
-  const minDist=Math.min(getPaperSize().w,getPaperSize().h)*0.03;const kept=[];found.sort((a,b)=>b.area-a.area);
-  for(const m of found){if(!kept.some(k=>Math.hypot(k.paperX-m.paperX,k.paperY-m.paperY)<minDist))kept.push(m);}return kept;
+
+  // 6. 去重
+  const minDist=Math.min(paperW,paperH)*0.025;
+  found.sort((a,b)=>b.area-a.area);
+  const kept=[];
+  for(const m of found){if(!kept.some(k=>Math.hypot(k.paperX-m.paperX,k.paperY-m.paperY)<minDist))kept.push(m);}
+  return kept;
 }
 
 function warpToImage(M,wx,wy){
