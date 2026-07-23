@@ -194,11 +194,11 @@ function skipOpenCv(){
     <div class="loading-overlay" id="overlayOrig"><div class="spinner"></div>处理中…</div>
   </div>
   <div class="canvas-label">绿=纸张四角（可拖拽）&nbsp; 红=标记点&nbsp; 蓝=纸心</div>
-  <div id="zoomBar" style="display:none;align-items:center;justify-content:center;gap:6px;padding:2px 0">
-    <button class="zoom-btn" id="zoomOut" style="width:34px;height:34px;border-radius:50%;border:1px solid #d1d5db;background:#fff;font-size:18px">−</button>
-    <span id="zoomLevel" style="font-size:13px;color:#6b7280;min-width:36px;text-align:center">1×</span>
-    <button class="zoom-btn" id="zoomIn" style="width:34px;height:34px;border-radius:50%;border:1px solid #d1d5db;background:#fff;font-size:18px">+</button>
-    <button id="zoomReset" style="padding:4px 10px;border-radius:6px;border:1px solid #d1d5db;background:#fff;font-size:12px;cursor:pointer">1:1</button>
+  <div id="zoomBar" style="display:none;position:absolute;top:8px;right:8px;z-index:10;flex-direction:column;gap:4px;background:rgba(255,255,255,0.9);border-radius:10px;padding:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15)">
+    <button id="zoomIn" style="width:40px;height:40px;border-radius:50%;border:none;background:#3b82f6;color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center;cursor:pointer">+</button>
+    <span id="zoomLevel" style="font-size:11px;color:#6b7280;text-align:center">1×</span>
+    <button id="zoomOut" style="width:40px;height:40px;border-radius:50%;border:none;background:#3b82f6;color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center;cursor:pointer">−</button>
+    <button id="zoomReset" style="width:40px;height:24px;border-radius:6px;border:none;background:#e5e7eb;color:#374151;font-size:11px;cursor:pointer">1:1</button>
   </div>
 </div>
 
@@ -549,11 +549,14 @@ function updateResults(){
       '<span class="detail">距心: '+m.dist.toFixed(2)+'  面积: '+m.area.toFixed(2)+'</span>'+
     '</div>';
   }).join('');
-  // 删除单个点
+  // 删除单个点（同步更新原图和公式）
   markerGrid.querySelectorAll('[data-delid]').forEach(function(b){b.addEventListener('click',function(){
     var id=+this.dataset.delid;
     var idx=markers.findIndex(function(m){return m.id===id;});
-    if(idx>=0){markers.splice(idx,1);drawOrig();updateResults();}
+    if(idx>=0){markers.splice(idx,1);drawOrig();updateResults();
+      if(markers.length>=2){var oe=calcOverallExEy();$('formulaResult').innerHTML='总体 <b>Ex='+oe.ex.toFixed(4)+'</b>  Ey='+oe.ey.toFixed(4)+' (K='+oe.k+', n='+markers.length+')';}
+      else{$('formulaResult').textContent='至少 2 个点才能算 Ex/Ey';}
+    }
   });});
 }
 
@@ -927,13 +930,13 @@ let dragIdx=-1;
 
 function onDragStart(e){if(!corners||addPointMode)return;
   const p=getCanvasPt(canvasOrig,e);const idx=nearestCornerIdx(p.x,p.y);
-  if(idx>=0){e.preventDefault();canvasOrig.style.touchAction='none';dragIdx=idx;}}
+  if(idx>=0){e.preventDefault();document.body.style.overflow='hidden';canvasOrig.style.touchAction='none';dragIdx=idx;}}
 
 function onDragMove(e){if(!corners||dragIdx<0)return;
   e.preventDefault();const p=getCanvasPt(canvasOrig,e);corners[dragIdx]=[p.x,p.y];drawOrig();}
 
 function onDragEnd(e){
-  if(dragIdx>=0){canvasOrig.style.touchAction='';dragIdx=-1;fullPipeline(false);}
+  if(dragIdx>=0){document.body.style.overflow='';canvasOrig.style.touchAction='';dragIdx=-1;fullPipeline(false);}
 }
 
 // 双指缩放（仅在添加点模式下）
