@@ -376,6 +376,82 @@ function findBestQuad(candidates) {
   if(!candidates.length)return null; candidates.sort((a,b)=>b.score-a.score); return candidates[0].quad;
 }
 
+/** 高纹理区域掩码：木纹、杂草纹理强，纸张相对平滑 */
+function textureMask(gray) {
+  const lap=new cv.Mat(), tex=new cv.Mat();
+  cv.Laplacian(gray, lap, cv.CV_32F, 3);
+  cv.convertScaleAbs(lap, lap);
+  cv.threshold(lap, tex, 0, 255, cv.THRESH_BINARY+cv.THRESH_OTSU);
+  lap.delete();
+  return tex;
+}
+
+/** 两条线段所在直线的交点（非平行时） */
+function lineIntersection(a, b) {
+  const d1=(a.y2-a.y1), d2=(b.y2-b.y1), d3=(a.x2-a.x1), d4=(b.x2-b.x1);
+  const denom=d1*d4-d3*d2;
+  if(Math.abs(denom)<1e-6)return null;
+  const ua=((a.x2-a.x1)*(a.y1-b.y1)-(a.y2-a.y1)*(a.x1-b.x1))/denom;
+  return [b.x1+ua*d4, b.y1+ua*d2];
+}
+
+/** 按位置聚类线段，返回代表线 */
+function clusterLines(segs, axis, maxCoord) {
+  // 用中点坐标排序后简单合并
+  const withC=segs.map(s=>{
+    const c=axis==='y'?(s.y1+s.y2)/2:(s.x1+s.x2)/2;
+    return{...s,c};
+  }).sort((a,b)=>a.c-b.c);
+  const groups=[];
+  const gap=axis==='y'?maxCoord*0.08:maxCoord*0.08;
+  for(const s of withC){
+    let placed=false;
+    for(const g of groups){if(Math.abs(g.c-s.c)<gap){g.c=(g.c*g.n+s.c)/(g.n+1);g.n++;placed=true;break;}}
+    if(!placed)groups.push({c:s.c,n:1});
+  }
+  return groups.map(g=>{
+    // 构造一条贯穿图像的代表线
+    if(axis==='y')return{x1:0,y1:g.c,x2:maxCoord,y2:g.c};
+    return{x1:g.c,y1:0,x2:g.c,y2:maxCoord};
+  });
+}
+
+function pairs(arr){
+  const res=[]; for(let i=0;i<arr.length;i++)for(let j=i+1;j<arr.length;j++)res.push([arr[i],arr[j]]); return res;
+}
+
+/** 策略：基于 Canny + Hough 直线交点找矩形。对杂乱自然背景更鲁棒 */
+function detectFromLineIntersections(src) {
+  const gray=new cv.Mat(), edges=new cv.Mat(), lines=new cv.Mat();
+  cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY); cv.GaussianBlur(gray,gray,new cv.Size(5,5),0);
+  cv.Canny(gray,edges,35,105);
+  cv.HoughLinesP(edges,lines,1,Math.PI/180,60,Math.min(src.rows,src.cols)*0.12,12);
+  const h=[], v=[];
+  for(let i=0;i<lines.rows;i++){
+    const x1=lines.data32S[i*4], y1=lines.data32S[i*4+1], x2=lines.data32S[i*4+2], y2=lines.data32S[i*4+3];
+    const ang=Math.atan2(y2-y1,x2-x1)*180/Math.PI, len=Math.hypot(x2-x1,y2-y1);
+    if(len<Math.min(src.rows,src.cols)*0.08)continue;
+    if(Math.abs(Math.sin(ang*Math.PI/180))<0.38)h.push({x1,y1,x2,y2,len,ang});
+    else if(Math.abs(Math.cos(ang*Math.PI/180))<0.38)v.push({x1,y1,x2,y2,len,ang});
+  }
+  lines.delete(); gray.delete(); edges.delete();
+  if(h.length<2||v.length<2)return null;
+  const hLines=clusterLines(h,'y',src.rows), vLines=clusterLines(v,'x',src.cols);
+  if(hLines.length<2||vLines.length<2)return null;
+  const imgArea=src.rows*src.cols;
+  let best=null,bestScore=-1;
+  for(const [h1,h2] of pairs(hLines)){
+    for(const [v1,v2] of pairs(vLines)){
+      const pts=[lineIntersection(h1,v1),lineIntersection(h1,v2),lineIntersection(h2,v2),lineIntersection(h2,v1)];
+      if(pts.some(p=>!p))continue;
+      const quad=orderCorners(pts);
+      const s=scoreQuad(quad,imgArea);
+      if(s>bestScore){bestScore=s; best=quad;}
+    }
+  }
+  return best;
+}
+
 function detectFromCanny(src,low,high,eps){
   const gray=new cv.Mat(),blurred=new cv.Mat(),edges=new cv.Mat(),dilated=new cv.Mat(),contours=new cv.MatVector();
   const imgArea=src.rows*src.cols; cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY); cv.GaussianBlur(gray,blurred,new cv.Size(5,5),0);
@@ -420,16 +496,23 @@ function detectFromMinAreaRect(src){
 
 function detectFromColorMask(src,eps,paperType){
   const rgb=new cv.Mat(),hsv=new cv.Mat(),paperMask=new cv.Mat(),closed=new cv.Mat(),contours=new cv.MatVector();
-  const imgArea=src.rows*src.cols; cv.cvtColor(src,rgb,cv.COLOR_RGBA2RGB); cv.cvtColor(rgb,hsv,cv.COLOR_RGB2HSV);
-  // HSV 范围：白色纸（低饱和+高亮）；棕色/牛皮纸（橙黄色调）
+  const gray=new cv.Mat();
+  const imgArea=src.rows*src.cols; cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY); cv.cvtColor(src,rgb,cv.COLOR_RGBA2RGB); cv.cvtColor(rgb,hsv,cv.COLOR_RGB2HSV);
+  // HSV 范围：白色纸（低饱和+高亮）；棕色/牛皮纸（橙黄色调，排除绿色杂草）
   let lo,hi;
   if(paperType==='brown'){
-    lo=[10,25,50,0]; hi=[45,180,200,255];
+    lo=[8,15,25,0]; hi=[42,255,245,255];
   }else{
-    lo=[0,0,130,0]; hi=[179,90,255,255];
+    lo=[0,0,130,0]; hi=[179,100,255,255];
   }
   const lower=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),lo); const upper=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),hi);
   cv.inRange(hsv,lower,upper,paperMask);
+  // 抑制木纹/杂草等高纹理区域（纸张通常比木板更平滑）
+  const tex=textureMask(gray);
+  const smooth=new cv.Mat();
+  cv.bitwise_not(tex,smooth);
+  cv.bitwise_and(paperMask,smooth,paperMask);
+  tex.delete();smooth.delete();
   // 大 kernel CLOSE 填平弹孔/撕裂/噪点，还原完整矩形
   const kernel=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(15,15));
   cv.morphologyEx(paperMask,closed,cv.MORPH_CLOSE,kernel);
@@ -439,7 +522,7 @@ function detectFromColorMask(src,eps,paperType){
   cv.findContours(closed,contours,new cv.Mat(),cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
   let cands=collectQuadsFromContours(contours,imgArea,eps,0.08,'color_mask_'+paperType);
   if(!cands.length){let maxCnt=null,maxArea=0;for(let i=0;i<contours.size();i++){const cnt=contours.get(i);const area=cv.contourArea(cnt);if(area>maxArea){maxArea=area;maxCnt=cnt;}}if(maxCnt&&maxArea>imgArea*0.08){const rect=cv.minAreaRect(maxCnt);cands=[{quad:orderCorners(cv.RotatedRect.points(rect).map(p=>[p.x,p.y])),score:0,areaPct:maxArea/imgArea}];}}
-  rgb.delete();hsv.delete();paperMask.delete();closed.delete();contours.delete();kernel.delete();kernel2.delete();lower.delete();upper.delete();
+  rgb.delete();hsv.delete();paperMask.delete();closed.delete();contours.delete();kernel.delete();kernel2.delete();lower.delete();upper.delete();gray.delete();
   return findBestQuad(cands);
 }
 
@@ -456,6 +539,7 @@ function detectCorners(src) {
   const colorQuad=detectFromColorMask(src,0.02,paperType); if(colorQuad){const s=scoreQuad(colorQuad,imgArea);if(s>0){lastStrategy='color_mask_'+paperType;return refineCorners(src,colorQuad);}}
   const all=[];
   const strats=[
+    ()=>{const q=detectFromLineIntersections(src);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'line_intersections'});}},
     ()=>{const q=detectFromCanny(src,50,150,0.02);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'canny_50_150'});}},
     ()=>{const q=detectFromCanny(src,30,100,0.015);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'canny_30_100'});}},
     ()=>{const q=detectFromCanny(src,75,200,0.025);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'canny_75_200'});}},
@@ -464,7 +548,14 @@ function detectCorners(src) {
     ()=>{const q=detectFromMinAreaRect(src);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'minAreaRect'});}}
   ];
   for(const fn of strats)fn();
-  if(!all.length)return null; all.sort((a,b)=>b.score-a.score); lastStrategy=all[0].strategy; return refineCorners(src,all[0].quad);
+  if(!all.length)return null;
+  // 户外场景中，木板可能包住纸张；优先选择面积适中、不太贴近边缘的候选
+  all.forEach(c=>{
+    const areaPct=quadArea(c.quad)/imgArea;
+    // 面积在 12%~75% 之间加分，过大（可能是木板）或过小减分
+    c.score*=(areaPct>0.12&&areaPct<0.75?1.15:0.85);
+  });
+  all.sort((a,b)=>b.score-a.score); lastStrategy=all[0].strategy; return refineCorners(src,all[0].quad);
 }
 
 function matCorners(flat){return cv.matFromArray(4,1,cv.CV_32FC2,flat);}
@@ -659,9 +750,7 @@ function fullPipeline(redetectCorners=true){
       var ex=k*sd(xv),ey=k*sd(yv);
       $('formulaResult').innerHTML='总体 <b>Ex='+ex.toFixed(4)+'</b>  Ey='+ey.toFixed(4)+' (K='+k+', n='+xv.length+')';
     }
-    if(markers.length||corners){
-      setTimeout(function(){resultCard.scrollIntoView({behavior:'smooth',block:'nearest'});},200);
-    }
+    // 不再自动滚动到结果卡片：用户可能需要先手动微调四角。
   },50);
 }
 
