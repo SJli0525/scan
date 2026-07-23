@@ -348,7 +348,8 @@ function scoreQuad(pts, imgArea) {
   const area=quadArea(pts); if(area<imgArea*0.08||area>imgArea*0.95)return -1;
   const {w,h}=getPaperSize(), expected=w/h, actual=quadAspectRatio(pts);
   const errA=Math.abs(actual-expected)/expected, errB=Math.abs(actual-1/expected)/(1/expected), ratioErr=Math.min(errA,errB);
-  const ratioScore=Math.max(0,1-ratioErr*2), angScore=Math.max(0,1-angleDeviation(pts)/20), sideScore=Math.max(0,1-(sideEquality(pts)-1)/0.5);
+  const ratioScore=Math.max(0,1-ratioErr*1.5), angScore=Math.max(0,1-angleDeviation(pts)/40), sideScore=Math.max(0,1-(sideEquality(pts)-1)/0.6);
+
   const rectScore=angScore*sideScore;
   const mat=cv.matFromArray(4,1,cv.CV_32SC2,pts.flat()); const convex=cv.isContourConvex(mat); mat.delete();
   return area*(0.2+0.3*ratioScore+0.5*rectScore)*(convex?1:0.3);
@@ -526,7 +527,45 @@ function detectFromColorMask(src,eps,paperType){
   return findBestQuad(cands);
 }
 
+/** 策略：最大平滑区域。纸面通常比草地/石墙纹理少，通过局部梯度找纸面 */
+function detectFromLargestSmoothRegion(src,eps){
+  const gray=new cv.Mat(), blur=new cv.Mat(), gx=new cv.Mat(), gy=new cv.Mat(), mag=new cv.Mat(), mask=new cv.Mat(), closed=new cv.Mat(), contours=new cv.MatVector();
+  const imgArea=src.rows*src.cols;
+  cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY); cv.bilateralFilter(gray,blur,9,75,75);
+  cv.Sobel(blur,gx,cv.CV_32F,1,0,3); cv.Sobel(blur,gy,cv.CV_32F,0,1,3); cv.magnitude(gx,gy,mag); cv.convertScaleAbs(mag,mag);
+  cv.threshold(mag,mask,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU);
+  const kernel=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(7,7)); cv.morphologyEx(mask,closed,cv.MORPH_CLOSE,kernel);
+  cv.findContours(closed,contours,new cv.Mat(),cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
+  let bestQuad=null,bestScore=-1;
+  for(let i=0;i<contours.size();i++){
+    const cnt=contours.get(i); const area=cv.contourArea(cnt); if(area<imgArea*0.08)continue;
+    const approx=new cv.Mat(); cv.approxPolyDP(cnt,approx,eps*cv.arcLength(cnt,true),true);
+    if(approx.rows===4){
+      const pts=[]; for(let j=0;j<4;j++)pts.push([approx.data32S[j*2],approx.data32S[j*2+1]]);
+      const quad=orderCorners(pts); const s=scoreQuad(quad,imgArea); if(s>bestScore){bestScore=s;bestQuad=quad;}
+    }
+    approx.delete();
+  }
+  if(!bestQuad){
+    let maxCnt=null,maxArea=0; for(let i=0;i<contours.size();i++){const cnt=contours.get(i);const a=cv.contourArea(cnt);if(a>maxArea){maxArea=a;maxCnt=cnt;}}
+    if(maxCnt&&maxArea>imgArea*0.08){const rect=cv.minAreaRect(maxCnt); const quad=orderCorners(cv.RotatedRect.points(rect).map(p=>[p.x,p.y])); if(scoreQuad(quad,imgArea)>0)bestQuad=quad;}
+  }
+  gray.delete();blur.delete();gx.delete();gy.delete();mag.delete();mask.delete();closed.delete();contours.delete();kernel.delete();
+  return bestQuad;
+}
+
+/** 策略：双边滤波 + 更强边缘闭合，适合纸边与背景颜色相近但纹理不同 */
+function detectFromBilateralEdges(src,eps){
+  const gray=new cv.Mat(),blur=new cv.Mat(),edges=new cv.Mat(),closed=new cv.Mat(),contours=new cv.MatVector();
+  const imgArea=src.rows*src.cols; cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY); cv.bilateralFilter(gray,blur,11,100,100);
+  cv.Canny(blur,edges,25,80); const kernel=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(5,5)); cv.morphologyEx(edges,closed,cv.MORPH_CLOSE,kernel);
+  cv.findContours(closed,contours,new cv.Mat(),cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
+  const cands=collectQuadsFromContours(contours,imgArea,eps,0.08,'bilateral_edges');
+  gray.delete();blur.delete();edges.delete();closed.delete();contours.delete();kernel.delete(); return findBestQuad(cands);
+}
+
 function refineCorners(src, quad) {
+
   const gray=new cv.Mat(); cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);
   const cornersMat=cv.matFromArray(4,1,cv.CV_32FC2,quad.flat());
   try{cv.cornerSubPix(gray,cornersMat,new cv.Size(5,5),new cv.Size(-1,-1),new cv.TermCriteria(cv.TERM_CRITERIA_EPS+cv.TERM_CRITERIA_MAX_ITER,30,0.01));}catch(e){}
@@ -540,6 +579,8 @@ function detectCorners(src) {
   const all=[];
   const strats=[
     ()=>{const q=detectFromLineIntersections(src);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'line_intersections'});}},
+    ()=>{const q=detectFromBilateralEdges(src,0.02);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'bilateral_edges'});}},
+    ()=>{const q=detectFromLargestSmoothRegion(src,0.02);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'smooth_region'});}},
     ()=>{const q=detectFromCanny(src,50,150,0.02);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'canny_50_150'});}},
     ()=>{const q=detectFromCanny(src,30,100,0.015);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'canny_30_100'});}},
     ()=>{const q=detectFromCanny(src,75,200,0.025);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'canny_75_200'});}},
@@ -976,11 +1017,14 @@ $('btnManual').addEventListener('click', enterManualMode);
 // --- 手动添加标记点 ---
 let addPointMode = false;
 let zoomScale = 1, zoomX = 0, zoomY = 0;
+let isPanning = false;
+let panStart = {x:0, y:0, zoomX:0, zoomY:0};
+
 
 function applyZoom(){
-  var w=$('canvasOrigWrap');
-  w.style.transform='scale('+zoomScale+') translate('+zoomX+'px,'+zoomY+'px)';
-  w.style.transformOrigin='0 0';
+  var c=$('canvasOrig');
+  c.style.transform='scale('+zoomScale+') translate('+zoomX+'px,'+zoomY+'px)';
+  c.style.transformOrigin='0 0';
   $('zoomLevel').textContent=zoomScale.toFixed(1)+'×';
 }
 function zoomIn(){if(zoomScale<5){zoomScale*=1.5;applyZoom();}}
@@ -1079,15 +1123,37 @@ function nearestCornerIdx(x,y){
 
 let dragIdx=-1;
 
-function onDragStart(e){if(!corners||addPointMode)return;
+function onDragStart(e){
+  if(isPanning)return;
+  const isTouch=e.touches&&e.touches.length>0;
+  // 缩放状态下进入平移模式
+  if(zoomScale>1 && (addPointMode||manualMode) && (!isTouch||e.touches.length===1)){
+    isPanning=true;
+    const t=isTouch?e.touches[0]:e;
+    panStart={x:t.clientX,y:t.clientY,zoomX,zoomY};
+    e.preventDefault();
+    return;
+  }
+  if(!corners||addPointMode)return;
   const p=getCanvasPt(canvasOrig,e);const idx=nearestCornerIdx(p.x,p.y);
   if(idx>=0){e.preventDefault();document.body.style.overflow='hidden';canvasOrig.style.touchAction='none';dragIdx=idx;}}
 
-function onDragMove(e){if(!corners||dragIdx<0)return;
+function onDragMove(e){
+  if(isPanning){
+    const isTouch=e.touches&&e.touches.length>0;
+    const t=isTouch?e.touches[0]:e;
+    zoomX=panStart.zoomX+(t.clientX-panStart.x)/zoomScale;
+    zoomY=panStart.zoomY+(t.clientY-panStart.y)/zoomScale;
+    applyZoom();
+    e.preventDefault();
+    return;
+  }
+  if(!corners||dragIdx<0)return;
   e.preventDefault();const p=getCanvasPt(canvasOrig,e);corners[dragIdx]=[p.x,p.y];drawOrig();}
 
 var lastTapTime=0;
 function onDragEnd(e){
+  if(isPanning){isPanning=false;return;}
   if(dragIdx>=0){document.body.style.overflow='';canvasOrig.style.touchAction='';dragIdx=-1;fullPipeline(false);return;}
   // 添加点模式：手指抬起/鼠标松开时加点（touchcancel 跳过）
   if(addPointMode&&imgEl&&cvReady&&e.type!=='touchcancel'){
@@ -1110,8 +1176,8 @@ canvasOrig.addEventListener('touchend',onDragEnd);
 canvasOrig.addEventListener('touchcancel',onDragEnd);
 // mouse
 canvasOrig.addEventListener('mousedown',onDragStart);
-window.addEventListener('mousemove',e=>{if(dragIdx>=0)onDragMove(e);});
-window.addEventListener('mouseup',onDragEnd);
+window.addEventListener('mousemove',e=>{if(isPanning||dragIdx>=0)onDragMove(e);});
+window.addEventListener('mouseup',e=>{onDragEnd(e);});
 
 // 手动标定：点击画布添加角点
 canvasOrig.addEventListener('click',onCanvasTap);
