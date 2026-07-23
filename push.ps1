@@ -1,29 +1,23 @@
+# Push the Android project to GitHub.
+# Before running, set your token: $env:GITHUB_TOKEN = "ghp_..."
 Set-Location -Path $PSScriptRoot
-"===== push start $(Get-Date) =====" | Set-Content push.log
+Write-Host "===== push start $(Get-Date) ====="
 
-function Log($msg) {
-    $msg | Add-Content push.log
-    Write-Host $msg
+if (-not $env:GITHUB_TOKEN) {
+    Write-Host "ERROR: GITHUB_TOKEN environment variable is not set." -ForegroundColor Red
+    Write-Host "Set it with: `$env:GITHUB_TOKEN = 'ghp_...'" -ForegroundColor Yellow
+    exit 1
 }
 
-try {
-    git add . 2>&1 | ForEach-Object { Log $_ }
-
-    git diff --cached --quiet
-    if ($LASTEXITCODE -ne 0) {
-        git commit -m "update" 2>&1 | ForEach-Object { Log $_ }
-    } else {
-        Log "no changes to commit"
-    }
-
-    git remote remove origin 2>&1 | ForEach-Object { Log $_ }
-    git remote add origin https://github.com/SJli0525/scan.git 2>&1 | ForEach-Object { Log $_ }
-    git push -u origin main 2>&1 | ForEach-Object { Log $_ }
-
-    Log "exit_code=$LASTEXITCODE"
-} catch {
-    Log "ERROR: $_"
+git add .
+git diff --cached --quiet
+if ($LASTEXITCODE -ne 0) {
+    git commit -m "update"
+} else {
+    Write-Host "no changes to commit"
 }
 
-Write-Host "Done. If Git asks for credentials, enter your GitHub username and your token as the password."
+git push "https://SJli0525:$env:GITHUB_TOKEN@github.com/SJli0525/scan.git" master:main
+Write-Host "exit_code=$LASTEXITCODE"
+Write-Host "===== push done ====="
 Read-Host "Press Enter to exit"

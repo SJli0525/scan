@@ -1,3 +1,3 @@
 @echo off
-cd /d %~dp0
-powershell -ExecutionPolicy Bypass -NoExit -File "%~dp0push.ps1"
+cd /d d:\scan\android
+powershell -ExecutionPolicy Bypass -NoExit -File "d:\scan\android\push.ps1"

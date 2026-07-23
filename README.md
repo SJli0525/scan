@@ -17,8 +17,8 @@ android/
 
 ## 构建步骤
 1. 安装 **Android Studio**（含 Android SDK 34）。
-2. 在本目录运行 `下载opencv.ps1`（PowerShell），得到 `assets/opencv.js` 与 `opencv_js.wasm`。
-3. 把 `d:\scan\scan.html` 复制到 `app/src/main/assets/scan.html`。
+2. 在本目录运行 `下载opencv.ps1`（PowerShell），得到 `assets/opencv.js`。`opencv_js.wasm` 若返回 404 页面会被脚本自动删除，因为 4.8.0 版本通常已将 wasm 内联进 `opencv.js`。
+3. 确认 `app/src/main/assets/scan.html` 已存在（该文件是移动端优化版，与仓库根目录的桌面版不同，请勿直接覆盖为桌面版）。
 4. 用 Android Studio 打开 `android/` 目录，等待 Gradle 同步完成。
 5. 手机开启「USB 调试」连上电脑，或新建模拟器，点击 ▶ Run 安装到设备。
 

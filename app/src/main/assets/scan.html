@@ -12,6 +12,7 @@ body {
   background: #f3f4f6; color: #1f2937; font-size: 15px; line-height: 1.5;
 }
 .card {
+  position: relative;
   background: #fff; border-radius: 14px; padding: 16px; margin-bottom: 12px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.08); transition: opacity 0.3s;
 }
@@ -131,7 +132,9 @@ function skipOpenCv(){
   cvReady=true;cvNoOpencv=true;
   document.querySelectorAll('.fileInput').forEach(function(fi){fi.disabled=false;});
   var st=document.getElementById('status');
-  if(st){st.textContent='已跳过 OpenCV，可使用手动标定四角 + 添加标记点';st.className='warn';}
+  if(st){st.textContent='已跳过 OpenCV，可手动标定四角（添加点需 OpenCV）';st.className='warn';}
+  var ap=document.getElementById('btnAddPoint');
+  if(ap)ap.disabled=true;
 }
 </script>
 
@@ -189,7 +192,7 @@ function skipOpenCv(){
 
 <div class="card">
   <div class="card-title">原图</div>
-  <div class="canvas-wrap">
+  <div class="canvas-wrap" id="canvasOrigWrap">
     <canvas id="canvasOrig"></canvas>
     <div class="loading-overlay" id="overlayOrig"><div class="spinner"></div>处理中…</div>
   </div>
@@ -259,7 +262,7 @@ function skipOpenCv(){
   <button class="btn btn-danger btn-secondary" id="btnClear" style="font-size:13px;padding:6px 16px">🗑 清除全部</button>
 </div>
 
-<script async src="https://cdn.jsdelivr.net/npm/@opencv/opencv-wasm@1.0.0/dist/opencv.js" onload="onOpenCvReady()"></script>
+<script async src="opencv.js" onload="onOpenCvReady()"></script>
 <script>
 let imgEl = null;
 let corners = null;
@@ -436,7 +439,7 @@ function detectFromColorMask(src,eps,paperType){
   cv.findContours(closed,contours,new cv.Mat(),cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
   let cands=collectQuadsFromContours(contours,imgArea,eps,0.08,'color_mask_'+paperType);
   if(!cands.length){let maxCnt=null,maxArea=0;for(let i=0;i<contours.size();i++){const cnt=contours.get(i);const area=cv.contourArea(cnt);if(area>maxArea){maxArea=area;maxCnt=cnt;}}if(maxCnt&&maxArea>imgArea*0.08){const rect=cv.minAreaRect(maxCnt);cands=[{quad:orderCorners(cv.RotatedRect.points(rect).map(p=>[p.x,p.y])),score:0,areaPct:maxArea/imgArea}];}}
-  rgb.delete();hsv.delete();paperMask.delete();closed.delete();contours.delete();kernel.delete();lower.delete();upper.delete();
+  rgb.delete();hsv.delete();paperMask.delete();closed.delete();contours.delete();kernel.delete();kernel2.delete();lower.delete();upper.delete();
   return findBestQuad(cands);
 }
 
@@ -477,6 +480,7 @@ function warpPaper(src,c){
 function detectMarkers(warped,warpW,warpH){
   const{w:paperW,h:paperH}=getPaperSize();
   const scaleX=paperW/warpW, scaleY=paperH/warpH;
+  const{minArea,maxArea}=getAreaThresholds();
   const found=[];
 
   // 1. 灰度+模糊
@@ -505,9 +509,7 @@ function detectMarkers(warped,warpW,warpH){
     if(circularity<0.5)continue;  // 太不圆跳过
     // 像素面积换算到纸面 mm²
     const paperArea=areaPx*scaleX*scaleY;
-    // 弹孔一般很小，限制 0.001%~0.5%
-    if(paperArea<0.001*paperW*paperH/100)continue;
-    if(paperArea>2*paperW*paperH/100)continue;
+    if(paperArea<minArea||paperArea>maxArea)continue;
     const Mo=cv.moments(cnt);
     if(Mo.m00===0)continue;
     const cx=Mo.m10/Mo.m00, cy=Mo.m01/Mo.m00;
@@ -524,6 +526,7 @@ function detectMarkers(warped,warpW,warpH){
     const cy=circles.data32F[i*3+1];
     const rPx=circles.data32F[i*3+2];
     const paperArea=Math.PI*rPx*rPx*scaleX*scaleY;
+    if(paperArea<minArea||paperArea>maxArea)continue;
     const wpX=cx*scaleX, wpY=cy*scaleY;
     // 去重：和已有标记距离太近跳过
     if(found.some(m=>Math.hypot(m.paperX-wpX,m.paperY-wpY)<Math.min(paperW,paperH)*0.03))continue;
@@ -576,7 +579,7 @@ function drawOrig(){
   if(centerImg){ctxOrig.fillStyle='#2563eb';ctxOrig.beginPath();ctxOrig.arc(centerImg.x,centerImg.y,r+2,0,Math.PI*2);ctxOrig.fill();}
   markers.forEach(function(m){if(centerImg){ctxOrig.strokeStyle='rgba(220,38,38,0.5)';ctxOrig.setLineDash([4,3]);ctxOrig.beginPath();ctxOrig.moveTo(centerImg.x,centerImg.y);ctxOrig.lineTo(m.imgX,m.imgY);ctxOrig.stroke();ctxOrig.setLineDash([]);}
     ctxOrig.fillStyle='#dc2626';ctxOrig.beginPath();ctxOrig.arc(m.imgX,m.imgY,r,0,Math.PI*2);ctxOrig.fill();
-    ctxOrig.fillStyle='#fff';ctxOrig.font='bold '+Math.max(10,r*2)+'px sans-serif';ctxOrig.textAlign='center';ctxOrig.textBaseline='middle';ctxOrig.fillText(String(m.id||(i+1)),m.imgX,m.imgY);});
+    ctxOrig.fillStyle='#fff';ctxOrig.font='bold '+Math.max(10,r*2)+'px sans-serif';ctxOrig.textAlign='center';ctxOrig.textBaseline='middle';ctxOrig.fillText(String(m.id),m.imgX,m.imgY);});
 }
 
 function drawWarp(src){
@@ -585,7 +588,7 @@ function drawWarp(src){
   const cx=warpW/2,cy=warpH/2;ctxWarp.fillStyle='#2563eb';ctxWarp.beginPath();ctxWarp.arc(cx,cy,6,0,Math.PI*2);ctxWarp.fill();
   markers.forEach(function(m){ctxWarp.strokeStyle='rgba(220,38,38,0.45)';ctxWarp.beginPath();ctxWarp.moveTo(cx,cy);ctxWarp.lineTo(m.warpX,m.warpY);ctxWarp.stroke();
     ctxWarp.fillStyle='#dc2626';ctxWarp.beginPath();ctxWarp.arc(m.warpX,m.warpY,5,0,Math.PI*2);ctxWarp.fill();
-    ctxWarp.fillStyle='#fff';ctxWarp.font='bold 11px sans-serif';ctxWarp.textAlign='center';ctxWarp.textBaseline='middle';ctxWarp.fillText(String(m.id||(i+1)),m.warpX,m.warpY);});
+    ctxWarp.fillStyle='#fff';ctxWarp.font='bold 11px sans-serif';ctxWarp.textAlign='center';ctxWarp.textBaseline='middle';ctxWarp.fillText(String(m.id),m.warpX,m.warpY);});
   warped.delete();
 }
 
@@ -644,7 +647,7 @@ function fullPipeline(redetectCorners=true){
     }
     // 统一启用/禁用按钮
     btnRerun.disabled=false;
-    $('btnAddPoint').disabled=!corners;
+    $('btnAddPoint').disabled=!corners||cvNoOpencv||typeof cv==='undefined';
     $('zoomBar').style.display='none';
     updateResults();
     showLoading(false);

@@ -1,0 +1,29 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Local configuration file (sdk path, etc)
+local.properties
+
+# IntelliJ / Android Studio
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+
+# Android captures / external native build
+captures/
+.externalNativeBuild/
+.cxx/
+
+# APK / AAB outputs (keep source assets, ignore build outputs)
+*.apk
+*.aab
