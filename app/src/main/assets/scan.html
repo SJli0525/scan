@@ -175,11 +175,11 @@ function skipOpenCv(){
   <div class="param-grid" style="margin-top:8px">
     <div class="param-item">
       <label>点面积下限 %</label>
-      <input type="number" id="minAreaPct" value="0.001" min="0.0001" step="0.001">
+      <input type="number" id="minAreaPct" value="0.005" min="0.0001" step="0.001">
     </div>
     <div class="param-item">
       <label>点面积上限 %</label>
-      <input type="number" id="maxAreaPct" value="0.5" min="0.01" step="0.1">
+      <input type="number" id="maxAreaPct" value="3" min="0.01" step="0.1">
     </div>
   </div>
 </div>
@@ -298,7 +298,7 @@ function getPaperSize() {
 function getAreaThresholds() {
   const { w, h } = getPaperSize();
   const paperArea = w * h;
-  const minPct = Math.max(parseFloat($('minAreaPct').value) || 0.05, 0.001) / 100;
+  const minPct = Math.max(parseFloat($('minAreaPct').value) || 0.005, 0.0001) / 100;
   const maxPct = Math.max(parseFloat($('maxAreaPct').value) || 3, 0.01) / 100;
   return { minArea: paperArea * minPct, maxArea: paperArea * maxPct };
 }
@@ -352,7 +352,7 @@ function scoreQuad(pts, imgArea) {
 
   const rectScore=angScore*sideScore;
   const mat=cv.matFromArray(4,1,cv.CV_32SC2,pts.flat()); const convex=cv.isContourConvex(mat); mat.delete();
-  return area*(0.2+0.3*ratioScore+0.5*rectScore)*(convex?1:0.3);
+  return Math.min(area,imgArea*0.4)*(0.2+0.3*ratioScore+0.5*rectScore)*(convex?1:0.3);
 }
 
 function extractQuadFromContour(cnt, epsilonRatio) {
@@ -573,10 +573,30 @@ function refineCorners(src, quad) {
   gray.delete();cornersMat.delete(); return orderCorners(refined);
 }
 
+/** 四边形内部灰度标准差：纸面均匀值小，木纹/杂草纹理值大 */
+function quadInnerStd(src,quad){
+  const gray=new cv.Mat(); cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);
+  const mask=cv.Mat.zeros(src.rows,src.cols,cv.CV_8UC1);
+  const pts=cv.matFromArray(4,1,cv.CV_32SC2,quad.flat());
+  const vec=new cv.MatVector(); vec.push_back(pts);
+  cv.fillPoly(mask,vec,new cv.Scalar(255));
+  const kernel=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(15,15));
+  cv.erode(mask,mask,kernel);
+  const mean=new cv.Mat(),std=new cv.Mat();
+  cv.meanStdDev(gray,mean,std,mask);
+  const s=std.doubleAt(0,0);
+  gray.delete();mask.delete();pts.delete();vec.delete();mean.delete();std.delete();kernel.delete();
+  return s;
+}
+
 function detectCorners(src) {
   const imgArea=src.rows*src.cols,{w,h}=getPaperSize();
-  const colorQuad=detectFromColorMask(src,0.02,paperType); if(colorQuad){const s=scoreQuad(colorQuad,imgArea);if(s>0){lastStrategy='color_mask_'+paperType;return refineCorners(src,colorQuad);}}
   const all=[];
+  // 颜色分割只作为候选之一（不再直接胜出，避免木板等同色背景被误判为纸）
+  try{
+    const colorQuad=detectFromColorMask(src,0.02,paperType);
+    if(colorQuad){const s=scoreQuad(colorQuad,imgArea);if(s>0)all.push({quad:colorQuad,score:s*1.1,strategy:'color_mask_'+paperType});}
+  }catch(e){}
   const strats=[
     ()=>{const q=detectFromLineIntersections(src);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'line_intersections'});}},
     ()=>{const q=detectFromBilateralEdges(src,0.02);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'bilateral_edges'});}},
@@ -588,13 +608,13 @@ function detectCorners(src) {
     ()=>{const q=detectFromAdaptive(src,0.02);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'adaptive'});}},
     ()=>{const q=detectFromMinAreaRect(src);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'minAreaRect'});}}
   ];
-  for(const fn of strats)fn();
+  for(const fn of strats){try{fn();}catch(e){}}
   if(!all.length)return null;
-  // 户外场景中，木板可能包住纸张；优先选择面积适中、不太贴近边缘的候选
+  // 户外场景中木板可能包住纸张：过大候选降权，并按内部均匀度加分（纸面比木纹/杂草更均匀）
   all.forEach(c=>{
     const areaPct=quadArea(c.quad)/imgArea;
-    // 面积在 12%~75% 之间加分，过大（可能是木板）或过小减分
-    c.score*=(areaPct>0.12&&areaPct<0.75?1.15:0.85);
+    c.score*=(areaPct>=0.75?0.65:(areaPct>0.10?1.0:0.7));
+    try{const std=quadInnerStd(src,c.quad);c.score*=Math.max(0.45,Math.min(1.3,1.45-std/28));}catch(e){}
   });
   all.sort((a,b)=>b.score-a.score); lastStrategy=all[0].strategy; return refineCorners(src,all[0].quad);
 }
@@ -620,54 +640,68 @@ function detectMarkers(warped,warpW,warpH){
   cv.cvtColor(warped,gray,cv.COLOR_RGBA2GRAY);
   cv.GaussianBlur(gray,blurred,new cv.Size(3,3),0);
 
-  // 2. 反向二值化：孔洞（暗）变白点
-  const binary=new cv.Mat();
-  cv.threshold(blurred,binary,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU);
-
-  // 3. 形态学开运算：去小噪点
-  const kOpen=cv.getStructuringElement(cv.MORPH_ELLIPSE,new cv.Size(3,3));
-  cv.morphologyEx(binary,binary,cv.MORPH_OPEN,kOpen);
-
-  // 4. 方案A：轮廓法 + 圆形度筛选
-  const contours=new cv.MatVector();
-  cv.findContours(binary,contours,new cv.Mat(),cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
-  for(let i=0;i<contours.size();i++){
-    const cnt=contours.get(i);
-    const areaPx=cv.contourArea(cnt);
-    const peri=cv.arcLength(cnt,true);
-    if(areaPx<3||peri<5)continue;  // 太小跳过
-    // 圆形度 = 4π·A / P²，接近 1 表示圆
-    const circularity=4*Math.PI*areaPx/(peri*peri);
-    if(circularity<0.5)continue;  // 太不圆跳过
-    // 像素面积换算到纸面 mm²
-    const paperArea=areaPx*scaleX*scaleY;
-    if(paperArea<minArea||paperArea>maxArea)continue;
-    const Mo=cv.moments(cnt);
-    if(Mo.m00===0)continue;
-    const cx=Mo.m10/Mo.m00, cy=Mo.m01/Mo.m00;
-    found.push({warpX:cx,warpY:cy,paperX:cx*scaleX,paperY:cy*scaleY,area:paperArea,r:Math.sqrt(areaPx/Math.PI)*scaleX,circ:circularity});
+  // 2. 从二值图收集圆形斑点
+  function collect(binary,circMin,minA,maxA){
+    const contours=new cv.MatVector();
+    cv.findContours(binary,contours,new cv.Mat(),cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
+    for(let i=0;i<contours.size();i++){
+      const cnt=contours.get(i);
+      const areaPx=cv.contourArea(cnt);
+      const peri=cv.arcLength(cnt,true);
+      if(areaPx<3||peri<5)continue;  // 太小跳过
+      // 圆形度 = 4π·A / P²，接近 1 表示圆
+      const circularity=4*Math.PI*areaPx/(peri*peri);
+      if(circularity<circMin)continue;
+      // 像素面积换算到纸面 mm²
+      const paperArea=areaPx*scaleX*scaleY;
+      if(paperArea<minA||paperArea>maxA)continue;
+      const Mo=cv.moments(cnt);
+      if(Mo.m00===0)continue;
+      const cx=Mo.m10/Mo.m00, cy=Mo.m01/Mo.m00;
+      found.push({warpX:cx,warpY:cy,paperX:cx*scaleX,paperY:cy*scaleY,area:paperArea,r:Math.sqrt(areaPx/Math.PI)*scaleX,circ:circularity});
+    }
+    contours.delete();
   }
-  binary.delete();contours.delete();
 
-  // 5. 方案B：霍夫圆检测（备用，找标准圆孔）
+  // 3. 多通道扫描：Otsu + 自适应阈值（光照不均时局部暗点/弹孔最有效）
+  function runPasses(circMin,minA,maxA){
+    const kOpen=cv.getStructuringElement(cv.MORPH_ELLIPSE,new cv.Size(3,3));
+    const b1=new cv.Mat();
+    cv.threshold(blurred,b1,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU);
+    cv.morphologyEx(b1,b1,cv.MORPH_OPEN,kOpen);
+    collect(b1,circMin,minA,maxA);
+    b1.delete();
+    const b2=new cv.Mat();
+    cv.adaptiveThreshold(blurred,b2,255,cv.ADAPTIVE_THRESH_GAUSSIAN_C,cv.THRESH_BINARY_INV,31,7);
+    cv.morphologyEx(b2,b2,cv.MORPH_OPEN,kOpen);
+    collect(b2,circMin,minA,maxA);
+    b2.delete();kOpen.delete();
+  }
+
+  runPasses(0.5,minArea,maxArea);
+  // 一个都没找到：自动放宽面积下限与圆度再扫一轮，避免"零结果"
+  if(!found.length)runPasses(0.3,minArea/10,maxArea*2);
+
+  // 4. 霍夫圆检测（备用，找标准圆孔）
   const circles=new cv.Mat();
-  cv.HoughCircles(blurred,circles,cv.HOUGH_GRADIENT,1,8,
-    undefined,30,3,12);  // minRadius=3px, maxRadius=12px
-  for(let i=0;i<circles.cols();i++){
-    const cx=circles.data32F[i*3];
-    const cy=circles.data32F[i*3+1];
-    const rPx=circles.data32F[i*3+2];
-    const paperArea=Math.PI*rPx*rPx*scaleX*scaleY;
-    if(paperArea<minArea||paperArea>maxArea)continue;
-    const wpX=cx*scaleX, wpY=cy*scaleY;
-    // 去重：和已有标记距离太近跳过
-    if(found.some(m=>Math.hypot(m.paperX-wpX,m.paperY-wpY)<Math.min(paperW,paperH)*0.03))continue;
-    found.push({warpX:cx,warpY:cy,paperX:wpX,paperY:wpY,area:paperArea,r:rPx*scaleX,circ:1});
-  }
+  try{
+    cv.HoughCircles(blurred,circles,cv.HOUGH_GRADIENT,1,8,100,25,2,16);
+    for(let i=0;i<circles.cols();i++){
+      const cx=circles.data32F[i*3];
+      const cy=circles.data32F[i*3+1];
+      const rPx=circles.data32F[i*3+2];
+      const paperArea=Math.PI*rPx*rPx*scaleX*scaleY;
+      if(paperArea<minArea||paperArea>maxArea)continue;
+      const wpX=cx*scaleX, wpY=cy*scaleY;
+      // 去重：和已有标记距离太近跳过
+      if(found.some(m=>Math.hypot(m.paperX-wpX,m.paperY-wpY)<Math.min(paperW,paperH)*0.03))continue;
+      found.push({warpX:cx,warpY:cy,paperX:wpX,paperY:wpY,area:paperArea,r:rPx*scaleX,circ:1});
+    }
+  }catch(e){}
   circles.delete();
   gray.delete();blurred.delete();
 
-  // 6. 去重
+  // 5. 去重
   const minDist=Math.min(paperW,paperH)*0.025;
   found.sort((a,b)=>b.area-a.area);
   const kept=[];
