@@ -607,51 +607,52 @@ function localContrast(gray,cx,cy,rPx){
   return mo-mi;
 }
 
-/** 二阶段：在胜者四边形内部按 S（饱和度）找真正的棕纸。棕纸 S 显著高于木板/背景 */
+/** 二阶段：在胜者四边形内部按 S（饱和度）找真正的棕纸。免 split/subtract，用 meanStdDev(hsv)+inRange */
 function refineInnerPaper(src,quad){
   const imgArea=src.rows*src.cols;
   const rgb=new cv.Mat(); cv.cvtColor(src,rgb,cv.COLOR_RGBA2RGB);
   const hsv=new cv.Mat(); cv.cvtColor(rgb,hsv,cv.COLOR_RGB2HSV);
-  const ch=new cv.MatVector(); cv.split(hsv,ch); const sChan=ch.get(1);
-  const outer=cv.Mat.zeros(sChan.rows,sChan.cols,cv.CV_8UC1);
+  const outer=cv.Mat.zeros(src.rows,src.cols,cv.CV_8UC1);
   const pts=cv.matFromArray(4,1,cv.CV_32SC2,quad.flat());
   const vec=new cv.MatVector(); vec.push_back(pts);
   cv.fillPoly(outer,vec,new cv.Scalar(255));
   const k7=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(7,7));
   cv.erode(outer,outer,k7);
-  const nz=cv.countNonZero(outer);
-  if(nz<100){rgb.delete();hsv.delete();ch.delete();sChan.delete();outer.delete();pts.delete();vec.delete();k7.delete();return null;}
-  // 自适应阈值：meanS + 0.15*stdS（纸 S≈128，木板 S≈91，差异约 35）
+  if(cv.countNonZero(outer)<100){rgb.delete();hsv.delete();outer.delete();pts.delete();vec.delete();k7.delete();return null;}
   const mean=new cv.Mat(),std=new cv.Mat();
-  cv.meanStdDev(sChan,mean,std,outer);
-  const t=mean.doubleAt(0,0)+std.doubleAt(0,0)*0.15;
+  cv.meanStdDev(hsv,mean,std,outer);
+  const t=mean.doubleAt(1,0)+std.doubleAt(1,0)*0.2;
   const pmask=new cv.Mat();
-  cv.threshold(sChan,pmask,t,255,cv.THRESH_BINARY);
+  const lower=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[0,t,0]);
+  const upper=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[180,255,255]);
+  cv.inRange(hsv,lower,upper,pmask);
+  lower.delete();upper.delete();
   cv.bitwise_and(pmask,outer,pmask);
   const k11=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(11,11));
   cv.morphologyEx(pmask,pmask,cv.MORPH_CLOSE,k11);
   cv.morphologyEx(pmask,pmask,cv.MORPH_OPEN,k7);
   const cnts=new cv.MatVector();
   cv.findContours(pmask,cnts,new cv.Mat(),cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
-  if(!cnts.size()){rgb.delete();hsv.delete();ch.delete();sChan.delete();outer.delete();pts.delete();vec.delete();k7.delete();mean.delete();std.delete();pmask.delete();k11.delete();cnts.delete();return null;}
+  if(!cnts.size()){rgb.delete();hsv.delete();outer.delete();pts.delete();vec.delete();k7.delete();mean.delete();std.delete();pmask.delete();k11.delete();cnts.delete();return null;}
   let maxCnt=null,maxA=0;
   for(let i=0;i<cnts.size();i++){const cnt=cnts.get(i);const a=cv.contourArea(cnt);if(a>maxA){maxA=a;maxCnt=cnt;}}
   const qa=quadArea(quad);
-  if(maxA<qa*0.2||maxA>qa*0.92){rgb.delete();hsv.delete();ch.delete();sChan.delete();outer.delete();pts.delete();vec.delete();k7.delete();mean.delete();std.delete();pmask.delete();k11.delete();cnts.delete();return null;}
+  if(maxA<qa*0.2||maxA>qa*0.92){rgb.delete();hsv.delete();outer.delete();pts.delete();vec.delete();k7.delete();mean.delete();std.delete();pmask.delete();k11.delete();cnts.delete();return null;}
   let q=extractQuadFromContour(maxCnt,0.02);
   if(!q){const rect=cv.minAreaRect(maxCnt);q=orderCorners(cv.RotatedRect.points(rect).map(p=>[p.x,p.y]));}
-  if(scoreQuad(q,imgArea)<=0){rgb.delete();hsv.delete();ch.delete();sChan.delete();outer.delete();pts.delete();vec.delete();k7.delete();mean.delete();std.delete();pmask.delete();k11.delete();cnts.delete();return null;}
-  // 验证：棕纸的 S 应显著高于周围（木板/背景）
-  const inner=cv.Mat.zeros(sChan.rows,sChan.cols,cv.CV_8UC1);
+  if(scoreQuad(q,imgArea)<=0){rgb.delete();hsv.delete();outer.delete();pts.delete();vec.delete();k7.delete();mean.delete();std.delete();pmask.delete();k11.delete();cnts.delete();return null;}
+  const inner=cv.Mat.zeros(src.rows,src.cols,cv.CV_8UC1);
   const pts2=cv.matFromArray(4,1,cv.CV_32SC2,q.flat());
   const vec2=new cv.MatVector(); vec2.push_back(pts2);
   cv.fillPoly(inner,vec2,new cv.Scalar(255));
   const k9=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(9,9));
   cv.erode(inner,inner,k9);
-  const ring=new cv.Mat(); cv.subtract(outer,inner,ring);
+  const notInner=new cv.Mat(); cv.bitwise_not(inner,notInner);
+  const ring=new cv.Mat(); cv.bitwise_and(outer,notInner,ring);
   cv.erode(ring,ring,k9);
-  const dS=cv.countNonZero(inner)>=100&&cv.countNonZero(ring)>=100?cv.mean(sChan,inner)[0]-cv.mean(sChan,ring)[0]:0;
-  rgb.delete();hsv.delete();ch.delete();sChan.delete();outer.delete();pts.delete();vec.delete();k7.delete();mean.delete();std.delete();pmask.delete();k11.delete();cnts.delete();inner.delete();pts2.delete();vec2.delete();k9.delete();ring.delete();
+  let dS=0;
+  if(cv.countNonZero(inner)>=100&&cv.countNonZero(ring)>=100){const mI=cv.mean(hsv,inner),mR=cv.mean(hsv,ring);dS=mI[1]-mR[1];}
+  rgb.delete();hsv.delete();outer.delete();pts.delete();vec.delete();k7.delete();mean.delete();std.delete();pmask.delete();k11.delete();cnts.delete();inner.delete();pts2.delete();vec2.delete();k9.delete();ring.delete();notInner.delete();
   return dS>=8?q:null;
 }
 
