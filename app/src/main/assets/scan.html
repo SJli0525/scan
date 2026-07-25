@@ -527,6 +527,29 @@ function detectFromColorMask(src,eps,paperType){
   return findBestQuad(cands);
 }
 
+/** 策略：高饱和度棕色直接找纸（H∈[6,38], S≥90, 纸 S≈128 >> 木板 S≈91） */
+function detectHighSatPaper(src){
+  const rgb=new cv.Mat(); cv.cvtColor(src,rgb,cv.COLOR_RGBA2RGB);
+  const hsv=new cv.Mat(); cv.cvtColor(rgb,hsv,cv.COLOR_RGB2HSV);
+  const lower=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[6,90,50,0]);
+  const upper=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[38,255,255,255]);
+  const mask=new cv.Mat(); cv.inRange(hsv,lower,upper,mask);
+  const k13=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(13,13));
+  cv.morphologyEx(mask,mask,cv.MORPH_CLOSE,k13);
+  cv.morphologyEx(mask,mask,cv.MORPH_CLOSE,cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(9,9)));
+  const cnts=new cv.MatVector();
+  cv.findContours(mask,cnts,new cv.Mat(),cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
+  const imgArea=src.rows*src.cols;
+  let cands=collectQuadsFromContours(cnts,imgArea,0.02,0.06,'high_sat');
+  if(!cands.length&&cnts.size()){
+    let mc=null,ma=0;
+    for(let i=0;i<cnts.size();i++){const c=cnts.get(i);const a=cv.contourArea(c);if(a>ma){ma=a;mc=c;}}
+    if(mc&&ma>imgArea*0.06){const r=cv.minAreaRect(mc);cands=[{quad:orderCorners(cv.RotatedRect.points(r).map(p=>[p.x,p.y])),score:0}];}
+  }
+  rgb.delete();hsv.delete();lower.delete();upper.delete();mask.delete();k13.delete();cnts.delete();
+  return findBestQuad(cands);
+}
+
 /** 策略：最大平滑区域。纸面通常比草地/石墙纹理少，通过局部梯度找纸面 */
 function detectFromLargestSmoothRegion(src,eps){
   const gray=new cv.Mat(), blur=new cv.Mat(), gx=new cv.Mat(), gy=new cv.Mat(), mag=new cv.Mat(), mask=new cv.Mat(), closed=new cv.Mat(), contours=new cv.MatVector();
@@ -623,8 +646,8 @@ function refineInnerPaper(src,quad){
   cv.meanStdDev(hsv,mean,std,outer);
   const t=mean.doubleAt(1,0)+std.doubleAt(1,0)*0.2;
   const pmask=new cv.Mat();
-  const lower=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[0,t,0]);
-  const upper=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[180,255,255]);
+  const lower=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[0,t,0,0]);
+  const upper=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[180,255,255,0]);
   cv.inRange(hsv,lower,upper,pmask);
   lower.delete();upper.delete();
   cv.bitwise_and(pmask,outer,pmask);
@@ -665,6 +688,7 @@ function detectCorners(src) {
     if(colorQuad){const s=scoreQuad(colorQuad,imgArea);if(s>0)all.push({quad:colorQuad,score:s*1.1,strategy:'color_mask_'+paperType});}
   }catch(e){}
   const strats=[
+    ()=>{const q=detectHighSatPaper(src);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'high_sat'});}},
     ()=>{const q=detectFromLineIntersections(src);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'line_intersections'});}},
     ()=>{const q=detectFromBilateralEdges(src,0.02);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'bilateral_edges'});}},
     ()=>{const q=detectFromLargestSmoothRegion(src,0.02);if(q){const s=scoreQuad(q,imgArea);if(s>0)all.push({quad:q,score:s,strategy:'smooth_region'});}},
