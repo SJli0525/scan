@@ -1343,7 +1343,7 @@ canvasOrig.addEventListener('touchcancel',onDragEnd);
 // mouse
 canvasOrig.addEventListener('mousedown',onDragStart);
 window.addEventListener('mousemove',e=>{if(isPanning||dragIdx>=0)onDragMove(e);});
-window.addEventListener('mouseup',e=>{onDragEnd(e);});
+window.addEventListener('mouseup',e=>{if(dragIdx>=0||e.target===canvasOrig)onDragEnd(e);});
 
 // 手动标定：点击画布添加角点
 canvasOrig.addEventListener('click',onCanvasTap);
