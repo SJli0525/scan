@@ -1271,6 +1271,7 @@ function onDragStart(e){
     isPanning=true;
     const t=isTouch?e.touches[0]:e;
     panStart={x:t.clientX,y:t.clientY,zoomX,zoomY};
+    if(addPointMode)tapStart={x:t.clientX,y:t.clientY};
     e.preventDefault();
     return;
   }
@@ -1298,7 +1299,17 @@ function onDragMove(e){
 
 var lastTapTime=0;
 function onDragEnd(e){
-  if(isPanning){isPanning=false;return;}
+  if(isPanning){
+    isPanning=false;
+    // 缩放状态下轻微移动=点击，不是平移 → 往下走加点逻辑
+    if(addPointMode&&tapStart){
+      const c=e.changedTouches?e.changedTouches[0]:e;
+      const d=Math.hypot((c.clientX||0)-tapStart.x,(c.clientY||0)-tapStart.y);
+      tapStart=null;
+      if(d>=10)return; // 明显移动=平移结束
+      // 轻微移动=点击，不return，往下走
+    }else return;
+  }
   if(dragIdx>=0){document.body.style.overflow='';canvasOrig.style.touchAction='';dragIdx=-1;fullPipeline(false);return;}
   // 添加点模式：手指抬起/鼠标松开时加点（touchcancel 跳过）
   if(addPointMode&&imgEl&&cvReady&&e.type!=='touchcancel'){
