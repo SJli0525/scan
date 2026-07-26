@@ -160,12 +160,12 @@ function skipOpenCv(){
   <div class="card-title">纸张参数</div>
   <div class="param-grid">
     <div class="param-item">
-      <label>纸宽 (mm)</label>
-      <input type="number" id="paperW" value="210" min="0.01" step="any">
+      <label>纸宽 (cm)</label>
+      <input type="number" id="paperW" value="100" min="0.01" step="any">
     </div>
     <div class="param-item">
-      <label>纸长 (mm)</label>
-      <input type="number" id="paperH" value="297" min="0.01" step="any">
+      <label>纸长 (cm)</label>
+      <input type="number" id="paperH" value="130" min="0.01" step="any">
     </div>
   </div>
   <div class="param-grid" style="margin-top:8px">
@@ -233,7 +233,7 @@ function skipOpenCv(){
   <div class="card-title">📐 Ex / Ey 标准差计算</div>
   <div class="param-item" style="margin-bottom:8px">
     <label>K 系数</label>
-    <input type="number" id="formulaK" value="0.615" step="any">
+    <input type="number" id="formulaK" value="0.6745" step="any">
   </div>
   <div style="display:flex;gap:4px;margin-top:6px;font-size:12px;color:#6b7280;padding:0 2px">
     <span style="width:16px;text-align:center">#</span>
@@ -927,7 +927,7 @@ function fullPipeline(redetectCorners=true){
     if(markers.length>=2){
       var xv=[],yv=[];markers.forEach(function(m){var w=getPaperSize().w/2,h=getPaperSize().h/2;xv.push(m.paperX-w);yv.push(m.paperY-h);});
       function sd(v){var m=v.reduce(function(a,b){return a+b;},0)/v.length;return Math.sqrt(v.reduce(function(a,val){return a+(val-m)*(val-m);},0)/(v.length-1));}
-      var k=parseFloat($('formulaK').value)||0.615;
+      var k=parseFloat($('formulaK').value)||0.6745;
       var ex=k*sd(xv),ey=k*sd(yv);
       $('formulaResult').innerHTML='总体 <b>Ex='+ex.toFixed(4)+'</b>  Ey='+ey.toFixed(4)+' (K='+k+', n='+xv.length+')';
     }
@@ -1037,7 +1037,7 @@ function calcOverallExEy(){
   if(markers.length<2)return{ex:0,ey:0,k:0};
   var xv=[],yv=[];markers.forEach(function(m){var w=getPaperSize().w/2,h=getPaperSize().h/2;xv.push(m.paperX-w);yv.push(m.paperY-h);});
   function sd(v){var m=v.reduce(function(a,b){return a+b;},0)/v.length;return Math.sqrt(v.reduce(function(a,val){return a+(val-m)*(val-m);},0)/(v.length-1));}
-  var k=parseFloat($('formulaK').value)||0.615;
+  var k=parseFloat($('formulaK').value)||0.6745;
   return{ex:k*sd(xv),ey:k*sd(yv),k:k};
 }
 
@@ -1126,7 +1126,7 @@ function calcStd(){
   const xMean = xVals.reduce((a,b)=>a+b,0)/xVals.length;
   const yMean = yVals.reduce((a,b)=>a+b,0)/yVals.length;
   $('formulaResult').innerHTML =
-    `Ex = ${Ex.toFixed(4)} mm<br>Ey = ${Ey.toFixed(4)} mm`+
+    `Ex = ${Ex.toFixed(4)} cm<br>Ey = ${Ey.toFixed(4)} cm`+
     `<br><span style="color:#6b7280;font-size:12px;font-weight:normal">σx=${sx.toFixed(4)}  σy=${sy.toFixed(4)} | n=${xVals.length} | X̄=${xMean.toFixed(2)} Ȳ=${yMean.toFixed(2)}</span>`;
 }
 
